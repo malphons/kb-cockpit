@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kb-cockpit</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+<div id="app"><p class="spinner">Loading…</p></div>
+<script src="config.js"></script>
+<script src="assets/vendor/supabase.min.js"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/app.js"></script>
+<script>
+(async function () {
+  await window.kbAuth.requireOwner({
+    onSignedOut: undefined,   // default gate (sign-in button)
+    onDenied: undefined,      // default denied screen
+    onReady: async (user) => {
+      try {
+        const [pages, lastSync, sources] = await Promise.all([
+          kbFetch("kb_pages?select=page_type,folder"),
+          kbFetch("kb_pages?select=updated_at&order=updated_at.desc&limit=1"),
+          kbFetch("xo_sources?select=source_id")
+        ]);
+        const byType = {};
+        pages.forEach(p => { const t = p.page_type || "other"; byType[t] = (byType[t] || 0) + 1; });
+        const synced = lastSync && lastSync[0] ? timeAgo(lastSync[0].updated_at) : "never";
+        const typeChips = Object.entries(byType).sort((a,b)=>b[1]-a[1])
+          .map(([t,n]) => `<div class="stat"><div class="n">${n}</div><div class="l">${esc(t)}</div></div>`).join("");
+        mount(renderHeader("index.html", user) + `<main>
+          <h2 class="section-title">Knowledge base</h2>
+          <div class="stats">
+            <div class="stat"><div class="n">${pages.length}</div><div class="l">pages</div></div>
+            <div class="stat"><div class="n">${sources.length}</div><div class="l">references</div></div>
+            ${typeChips}
+          </div>
+          <p class="muted">Mirror synced ${synced}.</p>
+          <div class="card">
+            <h2>Where to</h2>
+            <p><a href="navigator.html">Navigator</a> — browse the KB with rendered markdown, backlinks, and a graph.</p>
+            <p><a href="chat.html">Chat</a> — ask questions grounded in the KB, with citations.</p>
+            <p><a href="bibliography.html">Bibliography</a> — search references and keep live notes.</p>
+          </div>
+        </main>` + renderFooter());
+        wireSignOut();
+      } catch (err) {
+        mount(renderHeader("index.html", user) + `<main>${errorNotice(err)}
+          <p class="muted">If pages/references are 0, run the sync (<code>sync_kb.py</code>) and the bibliography seed, and confirm your allowlist row exists.</p></main>` + renderFooter());
+        wireSignOut();
+      }
+    }
+  });
+})();
+</script>
+</body>
+</html>

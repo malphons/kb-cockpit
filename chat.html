@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kb-cockpit — Chat</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+<div id="app"><p class="spinner">Loading…</p></div>
+<script src="config.js"></script>
+<script src="assets/vendor/supabase.min.js"></script>
+<script src="assets/vendor/marked.min.js"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/md.js"></script>
+<script>
+function appendMsg(role, html, cites) {
+  const log = document.getElementById("chat-log");
+  const citeHtml = (cites && cites.length)
+    ? `<div class="cites">${cites.map(c => `<a href="navigator.html?path=${encodeURIComponent(c.path)}">${esc(c.title || c.path)}</a>`).join("")}</div>`
+    : "";
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.innerHTML = `<div class="role">${role === "user" ? "You" : "Assistant"}</div><div class="bubble">${html}</div>${citeHtml}`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return div;
+}
+
+async function send() {
+  const ta = document.getElementById("q");
+  const sel = document.getElementById("model");
+  const btn = document.getElementById("send");
+  const question = ta.value.trim();
+  if (!question) return;
+  ta.value = "";
+  appendMsg("user", esc(question));
+  const thinking = appendMsg("assistant", `<span class="muted">Thinking…</span>`);
+  btn.disabled = true;
+  try {
+    const out = await kbChat(question, sel.value);
+    thinking.querySelector(".bubble").innerHTML = renderMarkdown(out.answer || "(no answer)", {});
+    if (out.citations && out.citations.length) {
+      const c = document.createElement("div");
+      c.className = "cites";
+      c.innerHTML = out.citations.map(ct => `<a href="navigator.html?path=${encodeURIComponent(ct.path)}">${esc(ct.title || ct.path)}</a>`).join("");
+      thinking.appendChild(c);
+    }
+  } catch (err) {
+    thinking.querySelector(".bubble").innerHTML = `<span class="note-status error">${esc(err.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+    document.getElementById("chat-log").scrollTop = 1e9;
+  }
+}
+
+(async function () {
+  await window.kbAuth.requireOwner({ onReady: (user) => {
+    const opts = (KB.chatModels || [KB.chatModelDefault]).map(m =>
+      `<option value="${esc(m)}"${m === KB.chatModelDefault ? " selected" : ""}>${esc(m)}</option>`).join("");
+    mount(renderHeader("chat.html", user) + `<div class="chat-wrap">
+      <div class="chat-log" id="chat-log">
+        <div class="msg assistant"><div class="role">Assistant</div>
+        <div class="bubble"><p>Ask anything about the knowledge base. Answers are grounded in your KB pages and cite the sources they used.</p>
+        <p class="muted">e.g. "What is the claim escalation ladder?" · "Summarize the composition theorem reformulation." · "Which papers cover stellar contamination?"</p></div></div>
+      </div>
+      <div class="chat-input">
+        <textarea id="q" placeholder="Ask the knowledge base… (Enter to send, Shift+Enter for newline)"></textarea>
+        <div class="controls">
+          <select id="model" title="Model">${opts}</select>
+          <button class="primary" id="send">Send</button>
+        </div>
+      </div>
+    </div>`);
+    wireSignOut();
+    document.getElementById("send").addEventListener("click", send);
+    document.getElementById("q").addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    document.getElementById("q").focus();
+  }});
+})();
+</script>
+</body>
+</html>

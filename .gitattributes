@@ -1,0 +1,4 @@
+# Git hooks must keep LF line endings — a CRLF shebang (#!/bin/sh\r) can fail
+# to execute on a fresh clone. Pin LF regardless of the platform's autocrlf.
+.githooks/** text eol=lf
+*.sh text eol=lf

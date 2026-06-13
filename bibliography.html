@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kb-cockpit — Bibliography</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+<div id="app"><p class="spinner">Loading…</p></div>
+<script src="config.js"></script>
+<script src="assets/vendor/supabase.min.js"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/app.js"></script>
+<script>
+let REFS = [], NOTES = {}, filter = "", statusF = "", chapterF = "", sortKey = "citation_key", sortDir = 1, openKey = null;
+const STATUS_LABEL = { Q: "queued", S: "skimmed", R: "read", N: "read+notes", C: "cited" };
+
+function visible() {
+  const q = filter.trim().toLowerCase();
+  let rows = REFS.filter(r => {
+    if (statusF && (r.status || "") !== statusF) return false;
+    if (chapterF && (r.chapter || "") !== chapterF) return false;
+    if (!q) return true;
+    return [r.citation_key, r.title, r.authors, r.venue, (r.themes || []).join(" ")]
+      .some(v => (v || "").toString().toLowerCase().includes(q));
+  });
+  return rows.sort((a, b) => {
+    const x = a[sortKey], y = b[sortKey];
+    if (x == null) return 1; if (y == null) return -1;
+    return (x > y ? 1 : x < y ? -1 : 0) * sortDir;
+  });
+}
+
+function refLinks(r) {
+  const out = [];
+  if (r.doi) out.push(`<a href="https://doi.org/${esc(r.doi)}" target="_blank" rel="noopener">DOI</a>`);
+  if (r.arxiv_id) out.push(`<a href="https://arxiv.org/abs/${esc(r.arxiv_id)}" target="_blank" rel="noopener">arXiv</a>`);
+  if (r.wiki_source_page) out.push(`<a href="${repoUrl(r.wiki_source_page, "blob")}" target="_blank" rel="noopener">wiki page</a>`);
+  if (r.raw_path) out.push(`<a href="${repoUrl(r.raw_path, "blob")}" target="_blank" rel="noopener">source file</a>`);
+  return out.join(" · ");
+}
+
+function noteDrawer(r) {
+  const note = NOTES[r.citation_key] || "";
+  return `<tr class="drawer-row"><td colspan="5"><div class="note-drawer">
+    <div class="muted" style="margin-bottom:4px">${esc(r.authors || "")}${r.year ? " (" + r.year + ")" : ""} — ${esc(r.venue || "")}</div>
+    <div style="margin-bottom:6px">${refLinks(r) || '<span class="muted">no links</span>'}</div>
+    <strong>Notes</strong>
+    <textarea id="note-${esc(r.citation_key)}" placeholder="Live notes for ${esc(r.citation_key)}…">${esc(note)}</textarea>
+    <div><button class="primary" data-save="${esc(r.citation_key)}">Save note</button>
+    <span class="note-status" id="status-${esc(r.citation_key)}">${note ? "loaded" : ""}</span></div>
+  </div></td></tr>`;
+}
+
+function render() {
+  const rows = visible();
+  const body = rows.map(r => {
+    const hasNote = !!(NOTES[r.citation_key] && NOTES[r.citation_key].trim());
+    const main = `<tr class="ref-row" data-key="${esc(r.citation_key)}">
+      <td class="key">${esc(r.citation_key)}${hasNote ? ' <span title="has notes">📝</span>' : ""}</td>
+      <td>${esc(r.title || "")}</td>
+      <td class="num">${fmt(r.year)}</td>
+      <td>${r.status ? `<span class="badge s-${esc(r.status)}" title="${esc(STATUS_LABEL[r.status] || r.status)}">${esc(r.status)}</span>` : "—"}</td>
+      <td>${esc(r.chapter || "—")}</td>
+    </tr>`;
+    return main + (openKey === r.citation_key ? noteDrawer(r) : "");
+  }).join("") || `<tr><td colspan="5" class="muted">No references match.</td></tr>`;
+
+  const arrows = k => sortKey === k ? (sortDir > 0 ? " ▲" : " ▼") : "";
+  document.getElementById("bib").innerHTML = `
+    <thead><tr>
+      <th data-k="citation_key">Key${arrows("citation_key")}</th>
+      <th data-k="title">Title${arrows("title")}</th>
+      <th data-k="year">Year${arrows("year")}</th>
+      <th data-k="status">Status${arrows("status")}</th>
+      <th data-k="chapter">Chapter${arrows("chapter")}</th>
+    </tr></thead><tbody>${body}</tbody>`;
+  document.getElementById("count").textContent = rows.length;
+}
+
+async function saveNote(key) {
+  const ta = document.getElementById("note-" + key);
+  const status = document.getElementById("status-" + key);
+  status.className = "note-status saving"; status.textContent = "Saving…";
+  try {
+    await kbFetch("xo_ref_notes", {
+      method: "POST",
+      prefer: "resolution=merge-duplicates,return=representation",
+      body: { citation_key: key, body: ta.value }
+    });
+    NOTES[key] = ta.value;
+    status.className = "note-status saved"; status.textContent = "Saved ✓";
+    // refresh the note indicator without collapsing the drawer
+    const row = document.querySelector(`.ref-row[data-key="${CSS.escape(key)}"] .key`);
+    if (row && ta.value.trim() && !row.querySelector("span")) row.insertAdjacentHTML("beforeend", ' <span title="has notes">📝</span>');
+  } catch (err) {
+    status.className = "note-status error"; status.textContent = err.message;
+  }
+}
+
+(async function () {
+  await window.kbAuth.requireOwner({ onReady: async (user) => {
+    try {
+      const [refs, notes] = await Promise.all([
+        kbFetch("kb_bib?select=citation_key,title,authors,year,venue,doi,arxiv_id,status,themes,chapter,raw_path,wiki_source_page&order=citation_key"),
+        kbFetch("xo_ref_notes?select=citation_key,body")
+      ]);
+      REFS = refs || [];
+      (notes || []).forEach(n => { NOTES[n.citation_key] = n.body || ""; });
+      const chapters = [...new Set(REFS.map(r => r.chapter).filter(Boolean))].sort();
+      const chapOpts = chapters.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+      const statusOpts = Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}">${k} — ${v}</option>`).join("");
+
+      mount(renderHeader("bibliography.html", user) + `<main>
+        <h2 class="section-title">Bibliography <span class="muted">(<span id="count">0</span> shown of ${REFS.length})</span></h2>
+        <div class="bib-toolbar">
+          <input class="search" id="search" type="search" placeholder="Search key, title, author, venue, theme…" autocomplete="off">
+          <select id="status-f"><option value="">All statuses</option>${statusOpts}</select>
+          <select id="chapter-f"><option value="">All chapters</option>${chapOpts}</select>
+        </div>
+        <table class="bib" id="bib"></table>
+        ${REFS.length ? "" : '<div class="notice">No references yet. Run <code>generate_bib_seed.py</code> and apply <code>seed_bib.sql</code>.</div>'}
+      </main>` + renderFooter());
+      wireSignOut();
+      render();
+
+      document.getElementById("search").addEventListener("input", e => { filter = e.target.value; render(); });
+      document.getElementById("status-f").addEventListener("change", e => { statusF = e.target.value; render(); });
+      document.getElementById("chapter-f").addEventListener("change", e => { chapterF = e.target.value; render(); });
+      document.getElementById("bib").addEventListener("click", e => {
+        const th = e.target.closest("th[data-k]");
+        if (th) { const k = th.dataset.k; if (k === sortKey) sortDir *= -1; else { sortKey = k; sortDir = 1; } render(); return; }
+        const save = e.target.closest("button[data-save]");
+        if (save) { saveNote(save.dataset.save); return; }
+        const row = e.target.closest(".ref-row");
+        if (row) { openKey = (openKey === row.dataset.key) ? null : row.dataset.key; render(); }
+      });
+    } catch (err) {
+      mount(renderHeader("bibliography.html", user) + `<main>${errorNotice(err)}</main>` + renderFooter());
+      wireSignOut();
+    }
+  }});
+})();
+</script>
+</body>
+</html>

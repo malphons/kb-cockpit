@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kb-cockpit — Navigator</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+<div id="app"><p class="spinner">Loading…</p></div>
+<script src="config.js"></script>
+<script src="assets/vendor/supabase.min.js"></script>
+<script src="assets/vendor/marked.min.js"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/app.js"></script>
+<script src="assets/md.js"></script>
+<script>
+let PAGES = [], BYPATH = {}, STEMMAP = {}, CURRENT = null;
+
+const FOLDER_ORDER = ["wiki/concepts", "wiki/sources", "wiki/entities", "wiki/questions", "manuscripts"];
+function folderLabel(f) { return (f || "other").replace(/^wiki\//, ""); }
+function typeOf(p) { return (p.page_type || p.subtype || "unknown"); }
+
+function renderTree(filter) {
+  const q = (filter || "").trim().toLowerCase();
+  const visible = PAGES.filter(p => !q ||
+    (p.title || "").toLowerCase().includes(q) ||
+    p.stem.toLowerCase().includes(q) ||
+    (p.tags || []).some(t => t.toLowerCase().includes(q)));
+  const groups = {};
+  visible.forEach(p => { (groups[p.folder] = groups[p.folder] || []).push(p); });
+  const order = [...FOLDER_ORDER.filter(f => groups[f]), ...Object.keys(groups).filter(f => !FOLDER_ORDER.includes(f)).sort()];
+  return order.map(f => {
+    const items = groups[f].sort((a, b) => (a.title || a.stem).localeCompare(b.title || b.stem));
+    const rows = items.map(p => `<a class="tree-item${p.path === (CURRENT && CURRENT.path) ? " active" : ""}"
+        href="navigator.html?path=${encodeURIComponent(p.path)}" data-path="${esc(p.path)}">
+        <span class="dot ${esc(typeOf(p))}"></span>${esc(p.title || p.stem)}</a>`).join("");
+    return `<div class="tree-group"><div class="g-label">${esc(folderLabel(f))} (${items.length})</div>${rows}</div>`;
+  }).join("") || `<p class="muted">No pages match.</p>`;
+}
+
+function neighborsOf(page) {
+  const seen = {};
+  const add = (stem, dir) => {
+    const path = STEMMAP[normStem(stem)];
+    if (!path || path === page.path) return;
+    if (seen[path]) { if (seen[path].dir !== dir) seen[path].dir = "both"; return; }
+    const pg = BYPATH[path];
+    seen[path] = { path, title: pg ? (pg.title || pg.stem) : path, dir };
+  };
+  (page.wikilinks || []).forEach(s => add(s, "out"));
+  (page.backlinks || []).forEach(s => add(s, "in"));
+  return Object.values(seen);
+}
+
+function renderReader(page) {
+  if (!page) { document.getElementById("reader").innerHTML = `<p class="muted">Select a page.</p>`; document.getElementById("aside").innerHTML = ""; return; }
+  const meta = [];
+  if (page.page_type) meta.push(`<span class="pill">${esc(page.page_type)}${page.subtype ? " · " + esc(page.subtype) : ""}</span>`);
+  (page.tags || []).slice(0, 8).forEach(t => meta.push(`<span class="pill">#${esc(t)}</span>`));
+  meta.push(`<span>synced ${timeAgo(page.updated_at)}</span>`);
+  meta.push(`<a href="${repoUrl(page.path, "blob")}" target="_blank" rel="noopener">open on GitHub ↗</a>`);
+  document.getElementById("reader").innerHTML =
+    `<div class="reader-meta">${meta.join("")}</div>
+     <div class="doc">${renderMarkdown(page.body, STEMMAP)}</div>`;
+
+  const nb = neighborsOf(page);
+  const backs = nb.filter(n => n.dir === "in" || n.dir === "both");
+  const blHtml = backs.length
+    ? backs.map(n => `<a href="navigator.html?path=${encodeURIComponent(n.path)}">${esc(n.title)}</a>`).join("")
+    : `<p class="muted">No backlinks.</p>`;
+  const graphHtml = nb.length
+    ? buildGraph({ path: page.path, title: page.title || page.stem }, nb.slice(0, 14))
+    : `<p class="muted">No links.</p>`;
+  document.getElementById("aside").innerHTML =
+    `<h3>Graph</h3>${graphHtml}<h3>Backlinks (${backs.length})</h3><div class="backlinks">${blHtml}</div>`;
+  document.getElementById("reader").parentElement.scrollTop = 0;
+}
+
+function setActive(path) {
+  document.querySelectorAll(".tree-item").forEach(a =>
+    a.classList.toggle("active", a.dataset.path === path));
+}
+function selectPath(path, push) {
+  CURRENT = BYPATH[path] || null;
+  if (push) history.pushState({ path }, "", "navigator.html?path=" + encodeURIComponent(path));
+  renderReader(CURRENT);
+  setActive(path);
+}
+
+(async function () {
+  await window.kbAuth.requireOwner({ onReady: async (user) => {
+    try {
+      PAGES = await kbFetch("kb_pages?select=path,stem,folder,page_type,subtype,title,body,wikilinks,backlinks,tags,updated_at&order=path");
+      PAGES.forEach(p => { BYPATH[p.path] = p; });
+      STEMMAP = buildStemMap(PAGES);
+      const start = qs("path") && BYPATH[qs("path")] ? qs("path") : (PAGES[0] && PAGES[0].path);
+      CURRENT = BYPATH[start] || null;
+
+      mount(renderHeader("navigator.html", user) + `<div class="cockpit">
+        <div class="pane sidebar">
+          <input class="tree-search search" id="tree-search" type="search" placeholder="Filter pages…" autocomplete="off">
+          <div id="tree"></div>
+        </div>
+        <div class="pane reader"><div id="reader"></div></div>
+        <div class="pane aside"><div id="aside"></div></div>
+      </div>`);
+      wireSignOut();
+      document.getElementById("tree").innerHTML = renderTree("");
+      renderReader(CURRENT);
+
+      document.getElementById("tree-search").addEventListener("input", e => {
+        document.getElementById("tree").innerHTML = renderTree(e.target.value);
+      });
+      // In-place navigation for any navigator?path= link (tree, wikilinks, backlinks, graph).
+      document.addEventListener("click", e => {
+        const a = e.target.closest('a[href^="navigator.html?path="]');
+        if (!a) return;
+        e.preventDefault();
+        const p = new URLSearchParams(a.getAttribute("href").split("?")[1]).get("path");
+        if (p && BYPATH[p]) selectPath(p, true);
+      });
+      window.addEventListener("popstate", () => {
+        const p = qs("path");
+        if (p && BYPATH[p]) { CURRENT = BYPATH[p]; renderReader(CURRENT); setActive(p); }
+      });
+    } catch (err) {
+      mount(renderHeader("navigator.html", user) + `<main>${errorNotice(err)}</main>` + renderFooter());
+      wireSignOut();
+    }
+  }});
+})();
+</script>
+</body>
+</html>

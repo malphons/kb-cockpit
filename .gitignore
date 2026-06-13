@@ -1,0 +1,16 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+.vscode/
+.idea/
+
+# Never commit the secret service_role key or any env file
+.env
+.env.*
+*.key
+
+# Node (only if a tooling step is ever added)
+node_modules/
+npm-debug.log*

@@ -1,0 +1,28 @@
+#!/bin/sh
+# commit-msg hook — reject AI/agent attribution in commit messages.
+# Companion to the xProject Knowledge Base commit-hygiene rule: every commit is
+# authored under the user's identity only, never an AI/agent.
+#
+# Activated per-clone via:  git config core.hooksPath .githooks
+#
+# $1 is the path to the file holding the proposed commit message.
+
+msg_file="$1"
+
+# Anchored/specific patterns so merely *describing* the rule does not trip the
+# hook (e.g. "no Co-Authored-By trailers" is fine; a real trailer line is not).
+if grep -iqE '^[[:space:]]*co-authored-by:[[:space:]]*(claude|anthropic)' "$msg_file" \
+   || grep -iqE 'generated with \[?claude' "$msg_file" \
+   || grep -qE '🤖' "$msg_file" \
+   || grep -iqE 'noreply@anthropic\.com' "$msg_file"; then
+  echo "" >&2
+  echo "✗ commit-msg hook: AI/agent attribution is not allowed in commit messages." >&2
+  echo "  Offending content:" >&2
+  grep -inE '^[[:space:]]*co-authored-by:[[:space:]]*(claude|anthropic)|generated with \[?claude|🤖|noreply@anthropic\.com' "$msg_file" | sed 's/^/    /' >&2
+  echo "" >&2
+  echo "  Remove the trailer/line and commit again." >&2
+  echo "" >&2
+  exit 1
+fi
+
+exit 0
