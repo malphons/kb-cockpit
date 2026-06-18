@@ -13,12 +13,18 @@
 <script src="assets/auth.js"></script>
 <script src="assets/app.js"></script>
 <script>
-let REFS = [], NOTES = {}, filter = "", statusF = "", chapterF = "", sortKey = "citation_key", sortDir = 1, openKey = null;
+let REFS = [], NOTES = {}, filter = "", statusF = "", chapterF = "", notesOnly = false,
+    sortKey = "citation_key", sortDir = 1, openKey = null;
 const STATUS_LABEL = { Q: "queued", S: "skimmed", R: "read", N: "read+notes", C: "cited" };
+
+const PDF_BUCKET = "kb-pdfs";
+const hasNote = k => !!(NOTES[k] && NOTES[k].trim());
+const noteCount = () => Object.keys(NOTES).filter(hasNote).length;
 
 function visible() {
   const q = filter.trim().toLowerCase();
   let rows = REFS.filter(r => {
+    if (notesOnly && !hasNote(r.citation_key)) return false;
     if (statusF && (r.status || "") !== statusF) return false;
     if (chapterF && (r.chapter || "") !== chapterF) return false;
     if (!q) return true;
@@ -32,39 +38,32 @@ function visible() {
   });
 }
 
+// External source URL as-is; otherwise a GitHub blob link into the (private) KB repo.
 function refLinks(r) {
   const out = [];
   if (r.doi) out.push(`<a href="https://doi.org/${esc(r.doi)}" target="_blank" rel="noopener">DOI</a>`);
   if (r.arxiv_id) out.push(`<a href="https://arxiv.org/abs/${esc(r.arxiv_id)}" target="_blank" rel="noopener">arXiv</a>`);
   if (r.wiki_source_page) out.push(`<a href="${repoUrl(r.wiki_source_page, "blob")}" target="_blank" rel="noopener">wiki page</a>`);
-  if (r.raw_path) out.push(`<a href="${repoUrl(r.raw_path, "blob")}" target="_blank" rel="noopener">source file</a>`);
+  if (r.raw_path) {
+    const isUrl = /^https?:\/\//i.test(r.raw_path);
+    const href = isUrl ? r.raw_path : repoUrl(r.raw_path, "blob");
+    out.push(`<a href="${esc(href)}" target="_blank" rel="noopener">${isUrl ? "abstract ↗" : "source file ↗"}</a>`);
+  }
   return out.join(" · ");
-}
-
-function noteDrawer(r) {
-  const note = NOTES[r.citation_key] || "";
-  return `<tr class="drawer-row"><td colspan="5"><div class="note-drawer">
-    <div class="muted" style="margin-bottom:4px">${esc(r.authors || "")}${r.year ? " (" + r.year + ")" : ""} — ${esc(r.venue || "")}</div>
-    <div style="margin-bottom:6px">${refLinks(r) || '<span class="muted">no links</span>'}</div>
-    <strong>Notes</strong>
-    <textarea id="note-${esc(r.citation_key)}" placeholder="Live notes for ${esc(r.citation_key)}…">${esc(note)}</textarea>
-    <div><button class="primary" data-save="${esc(r.citation_key)}">Save note</button>
-    <span class="note-status" id="status-${esc(r.citation_key)}">${note ? "loaded" : ""}</span></div>
-  </div></td></tr>`;
 }
 
 function render() {
   const rows = visible();
   const body = rows.map(r => {
-    const hasNote = !!(NOTES[r.citation_key] && NOTES[r.citation_key].trim());
-    const main = `<tr class="ref-row" data-key="${esc(r.citation_key)}">
-      <td class="key">${esc(r.citation_key)}${hasNote ? ' <span title="has notes">📝</span>' : ""}</td>
-      <td>${esc(r.title || "")}</td>
+    const note = hasNote(r.citation_key);
+    const pdf = r.pdf_object ? '<span class="has-pdf-pill">PDF</span>' : "";
+    return `<tr class="ref-row${note ? " has-note" : ""}" data-key="${esc(r.citation_key)}">
+      <td class="key">${esc(r.citation_key)}${note ? ' <span class="notemark" title="has notes">📝</span>' : ""}</td>
+      <td>${esc(r.title || "")}${pdf}</td>
       <td class="num">${fmt(r.year)}</td>
       <td>${r.status ? `<span class="badge s-${esc(r.status)}" title="${esc(STATUS_LABEL[r.status] || r.status)}">${esc(r.status)}</span>` : "—"}</td>
       <td>${esc(r.chapter || "—")}</td>
     </tr>`;
-    return main + (openKey === r.citation_key ? noteDrawer(r) : "");
   }).join("") || `<tr><td colspan="5" class="muted">No references match.</td></tr>`;
 
   const arrows = k => sortKey === k ? (sortDir > 0 ? " ▲" : " ▼") : "";
@@ -77,12 +76,78 @@ function render() {
       <th data-k="chapter">Chapter${arrows("chapter")}</th>
     </tr></thead><tbody>${body}</tbody>`;
   document.getElementById("count").textContent = rows.length;
+  const nc = document.getElementById("notecount");
+  if (nc) nc.textContent = `${noteCount()} with notes`;
+}
+
+// ---- reading panel (PDF left, notes right) ----
+function refByKey(k) { return REFS.find(r => r.citation_key === k); }
+
+async function openReader(key) {
+  const r = refByKey(key);
+  if (!r) return;
+  openKey = key;
+  const panel = document.getElementById("reader-panel");
+  const note = NOTES[key] || "";
+  panel.querySelector(".rp-key").textContent = r.citation_key;
+  panel.querySelector(".rp-title").textContent = (r.title || "").replace(/<[^>]+>/g, "");
+  panel.querySelector(".rp-meta").innerHTML =
+    `${esc(r.authors || "")}${r.year ? " (" + r.year + ")" : ""}${r.venue ? " — " + esc(r.venue) : ""}`;
+  panel.querySelector(".rp-links").innerHTML = refLinks(r) || '<span class="muted">no links</span>';
+  const ta = panel.querySelector("#rp-note");
+  ta.value = note;
+  setRpStatus(note ? "loaded" : "", "");
+  panel.classList.remove("hidden");
+  ta.focus();
+
+  // PDF pane
+  const pane = panel.querySelector(".rp-pdf");
+  pane.innerHTML = '<div class="placeholder">Loading PDF…</div>';
+  if (r.pdf_object) {
+    try {
+      const { data, error } = await window.kbAuth.sb
+        .storage.from(PDF_BUCKET).createSignedUrl(r.pdf_object, 3600);
+      if (error || !data?.signedUrl) throw new Error(error?.message || "no signed URL");
+      // only render if this is still the open paper
+      if (openKey === key) {
+        pane.innerHTML = `<iframe src="${esc(data.signedUrl)}#view=FitH" title="PDF"></iframe>`;
+      }
+    } catch (e) {
+      pane.innerHTML = `<div class="placeholder"><div>Couldn't load PDF.<br><span class="muted">${esc(e.message)}</span></div></div>`;
+    }
+  } else if (r.abstract) {
+    const isUrl = r.raw_path && /^https?:\/\//i.test(r.raw_path);
+    const link = isUrl ? `<a href="${esc(r.raw_path)}" target="_blank" rel="noopener">Open on AGU ↗</a>` : "";
+    pane.innerHTML = `<article class="rp-abstract">
+      <h3>${esc((r.title || "").replace(/<[^>]+>/g, ""))}</h3>
+      <div class="rp-abs-meta">${esc(r.authors || "")}${r.venue ? " · " + esc(r.venue) : ""}</div>
+      <div class="rp-abs-body">${esc(r.abstract)}</div>
+      <div class="rp-abs-foot"><span class="muted">Abstract text (proxy for the full paper).</span> ${link}</div>
+    </article>`;
+  } else if (r.raw_path && /^https?:\/\//i.test(r.raw_path)) {
+    pane.innerHTML = `<div class="placeholder">
+      <div>This reference is a conference / web abstract, not a hosted PDF.</div>
+      <a class="btn" href="${esc(r.raw_path)}" target="_blank" rel="noopener">Open abstract ↗</a>
+    </div>`;
+  } else {
+    pane.innerHTML = `<div class="placeholder"><div>No PDF or abstract for this reference.</div></div>`;
+  }
+}
+
+function closeReader() {
+  openKey = null;
+  document.getElementById("reader-panel").classList.add("hidden");
+  document.querySelector(".rp-pdf").innerHTML = ""; // stop the iframe
+}
+
+function setRpStatus(text, cls) {
+  const s = document.getElementById("rp-status");
+  if (s) { s.className = "note-status " + (cls || ""); s.textContent = text; }
 }
 
 async function saveNote(key) {
-  const ta = document.getElementById("note-" + key);
-  const status = document.getElementById("status-" + key);
-  status.className = "note-status saving"; status.textContent = "Saving…";
+  const ta = document.getElementById("rp-note");
+  setRpStatus("Saving…", "saving");
   try {
     await kbFetch("xo_ref_notes", {
       method: "POST",
@@ -90,12 +155,10 @@ async function saveNote(key) {
       body: { citation_key: key, body: ta.value }
     });
     NOTES[key] = ta.value;
-    status.className = "note-status saved"; status.textContent = "Saved ✓";
-    // refresh the note indicator without collapsing the drawer
-    const row = document.querySelector(`.ref-row[data-key="${CSS.escape(key)}"] .key`);
-    if (row && ta.value.trim() && !row.querySelector("span")) row.insertAdjacentHTML("beforeend", ' <span title="has notes">📝</span>');
+    setRpStatus("Saved ✓", "saved");
+    render(); // refresh badge, has-note class, counter
   } catch (err) {
-    status.className = "note-status error"; status.textContent = err.message;
+    setRpStatus(err.message, "error");
   }
 }
 
@@ -103,7 +166,7 @@ async function saveNote(key) {
   await window.kbAuth.requireOwner({ onReady: async (user) => {
     try {
       const [refs, notes] = await Promise.all([
-        kbFetch("kb_bib?select=citation_key,title,authors,year,venue,doi,arxiv_id,status,themes,chapter,raw_path,wiki_source_page&order=citation_key"),
+        kbFetch("kb_bib?select=citation_key,title,authors,year,venue,doi,arxiv_id,status,themes,chapter,raw_path,wiki_source_page,pdf_object,abstract&order=citation_key"),
         kbFetch("xo_ref_notes?select=citation_key,body")
       ]);
       REFS = refs || [];
@@ -111,31 +174,64 @@ async function saveNote(key) {
       const chapters = [...new Set(REFS.map(r => r.chapter).filter(Boolean))].sort();
       const chapOpts = chapters.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
       const statusOpts = Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}">${k} — ${v}</option>`).join("");
+      const pdfCount = REFS.filter(r => r.pdf_object).length;
 
       mount(renderHeader("bibliography.html", user) + `<main>
-        <h2 class="section-title">Bibliography <span class="muted">(<span id="count">0</span> shown of ${REFS.length})</span></h2>
+        <h2 class="section-title">Bibliography <span class="muted">(<span id="count">0</span> shown of ${REFS.length} · ${pdfCount} with PDF · <span id="notecount" class="notecount">0 with notes</span>)</span></h2>
         <div class="bib-toolbar">
           <input class="search" id="search" type="search" placeholder="Search key, title, author, venue, theme…" autocomplete="off">
           <select id="status-f"><option value="">All statuses</option>${statusOpts}</select>
           <select id="chapter-f"><option value="">All chapters</option>${chapOpts}</select>
+          <label class="toggle"><input type="checkbox" id="notes-only"> 📝 Has notes</label>
         </div>
         <table class="bib" id="bib"></table>
         ${REFS.length ? "" : '<div class="notice">No references yet. Run <code>generate_bib_seed.py</code> and apply <code>seed_bib.sql</code>.</div>'}
-      </main>` + renderFooter());
+      </main>` + renderFooter() + `
+      <div id="reader-panel" class="reader-panel hidden">
+        <div class="rp-head">
+          <span class="rp-key"></span>
+          <span class="rp-title"></span>
+          <span class="spacer"></span>
+          <button id="rp-close">✕ Close</button>
+        </div>
+        <div class="rp-body">
+          <div class="rp-pdf"></div>
+          <div class="rp-notes">
+            <div class="rp-meta"></div>
+            <div class="rp-links"></div>
+            <label class="rp-lbl">Notes</label>
+            <textarea id="rp-note" placeholder="Live notes — autosaves when you click away, or hit Save…"></textarea>
+            <div class="rp-actions">
+              <button class="primary" id="rp-save">Save note</button>
+              <span class="note-status" id="rp-status"></span>
+            </div>
+          </div>
+        </div>
+      </div>`);
       wireSignOut();
       render();
 
       document.getElementById("search").addEventListener("input", e => { filter = e.target.value; render(); });
       document.getElementById("status-f").addEventListener("change", e => { statusF = e.target.value; render(); });
       document.getElementById("chapter-f").addEventListener("change", e => { chapterF = e.target.value; render(); });
+      document.getElementById("notes-only").addEventListener("change", e => { notesOnly = e.target.checked; render(); });
+
       document.getElementById("bib").addEventListener("click", e => {
         const th = e.target.closest("th[data-k]");
         if (th) { const k = th.dataset.k; if (k === sortKey) sortDir *= -1; else { sortKey = k; sortDir = 1; } render(); return; }
-        const save = e.target.closest("button[data-save]");
-        if (save) { saveNote(save.dataset.save); return; }
+        if (e.target.closest("a")) return; // let inline links work
         const row = e.target.closest(".ref-row");
-        if (row) { openKey = (openKey === row.dataset.key) ? null : row.dataset.key; render(); }
+        if (row) openReader(row.dataset.key);
       });
+
+      // reader panel wiring
+      document.getElementById("rp-close").addEventListener("click", closeReader);
+      document.getElementById("rp-save").addEventListener("click", () => openKey && saveNote(openKey));
+      // autosave on blur if changed
+      document.getElementById("rp-note").addEventListener("blur", () => {
+        if (openKey && document.getElementById("rp-note").value !== (NOTES[openKey] || "")) saveNote(openKey);
+      });
+      document.addEventListener("keydown", e => { if (e.key === "Escape" && openKey) closeReader(); });
     } catch (err) {
       mount(renderHeader("bibliography.html", user) + `<main>${errorNotice(err)}</main>` + renderFooter());
       wireSignOut();

@@ -171,6 +171,42 @@ table.bib .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 .note-status.saving { color: var(--warn); }
 .note-status.error { color: var(--bad); }
 
+/* has-notes affordances */
+table.bib .notemark { color: var(--accent-2); cursor: default; }
+table.bib tr.has-note .key { font-weight: 600; }
+.bib-toolbar .toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; cursor: pointer; user-select: none; white-space: nowrap; }
+.bib-toolbar .toggle input { width: auto; margin: 0; }
+.bib-toolbar .notecount { color: var(--accent-2); font-size: 12.5px; }
+table.bib tr.ref-row { cursor: pointer; }
+.has-pdf-pill { display:inline-block; margin-left:6px; font-size:10px; color: var(--muted); border:1px solid var(--line); border-radius:999px; padding:0 6px; vertical-align:middle; }
+
+/* reading panel: PDF left, notes right */
+.reader-panel { position: fixed; inset: 0; z-index: 60; background: var(--bg); display: grid; grid-template-rows: auto 1fr; }
+.reader-panel.hidden { display: none; }
+.rp-head { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.rp-head .rp-key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); font-size: 13px; }
+.rp-head .rp-title { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rp-head .spacer { margin-left: auto; }
+.rp-body { display: grid; grid-template-columns: minmax(0, 1fr) 400px; min-height: 0; }
+.rp-pdf { background: #1a1f29; min-height: 0; position: relative; }
+.rp-pdf iframe { width: 100%; height: 100%; border: 0; display: block; }
+.rp-pdf .placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; gap: 16px; color: var(--muted); text-align: center; padding: 28px; }
+.rp-abstract { height: 100%; overflow: auto; padding: 28px 32px; }
+.rp-abstract h3 { font-size: 19px; line-height: 1.35; margin: 0 0 8px; max-width: 760px; }
+.rp-abstract .rp-abs-meta { color: var(--muted); font-size: 13px; margin-bottom: 18px; max-width: 760px; }
+.rp-abstract .rp-abs-body { font-size: 15px; line-height: 1.7; white-space: pre-wrap; max-width: 760px; }
+.rp-abstract .rp-abs-foot { margin-top: 20px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 13px; max-width: 760px; display: flex; gap: 12px; align-items: center; }
+.rp-notes { border-left: 1px solid var(--line); background: var(--panel); padding: 14px 16px; overflow: auto; display: flex; flex-direction: column; min-height: 0; }
+.rp-notes .rp-meta { color: var(--muted); font-size: 12.5px; margin-bottom: 8px; line-height: 1.5; }
+.rp-notes .rp-links { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; font-size: 13px; }
+.rp-notes label.rp-lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin-bottom: 6px; }
+.rp-notes textarea { flex: 1; min-height: 260px; resize: none; margin-bottom: 8px; line-height: 1.55; }
+.rp-notes .rp-actions { display: flex; align-items: center; gap: 12px; }
+@media (max-width: 860px) {
+  .rp-body { grid-template-columns: 1fr; grid-template-rows: minmax(0,1fr) minmax(0,1fr); }
+  .rp-notes { border-left: 0; border-top: 1px solid var(--line); }
+}
+
 /* notices + footer */
 .notice { background: var(--panel); border: 1px solid var(--warn); border-left-width: 4px; border-radius: 8px; padding: 14px 18px; margin: 18px 0; }
 footer.site { color: var(--muted); font-size: 12px; padding: 16px 22px; border-top: 1px solid var(--line); }
