@@ -14,16 +14,20 @@
 <script src="assets/app.js"></script>
 <script>
 let REFS = [], NOTES = {}, OBJECTS = [], filter = "", statusF = "", chapterF = "", notesOnly = false,
-    tagFilter = new Set(), sortKey = "reading_priority", sortDir = -1, openKey = null;
+    tagFilter = new Set(), sortKey = "reading_priority", sortDir = -1, openKey = null,
+    scopeF = "curated", archiveLoaded = false;
 const STATUS_LABEL = { Q: "queued", S: "skimmed", R: "read", N: "read+notes", C: "cited" };
-const PDF_BUCKET = "kb-pdfs";
+// kb_library unifies the curated bibliography (kb_bib) and the arXiv archive (kb_archive).
+// ref_id = citation_key for curated, arxiv_id for archive; bucket tells us where the PDF lives.
+const LIB_COLS = "corpus,ref_id,bucket,pdf_object,title,authors,year,venue,status,chapter,doi,arxiv_id,raw_path,wiki_source_page,abstract,primary_category,tags,reading_priority";
 
 const hasNote = k => !!(NOTES[k] && NOTES[k].trim());
 const noteCount = () => Object.keys(NOTES).filter(hasNote).length;
 const tagsOf = r => Array.isArray(r.tags) ? r.tags : [];
-const refByKey = k => REFS.find(r => r.citation_key === k);
+const refByKey = k => REFS.find(r => r.ref_id === k);
 const isObj = t => t.startsWith("@");           // object/target tags are '@'-prefixed
 const objName = t => t.replace(/^@/, "");
+const scopedRefs = () => scopeF ? REFS.filter(r => r.corpus === scopeF) : REFS;
 
 // deterministic per-tag color (themes); objects use a fixed style via .obj class
 function hashHue(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return h; }
@@ -37,21 +41,22 @@ function tagChip(t, opt = {}) {
   return `<span class="tagchip${obj ? " obj" : ""}${opt.active ? " active" : ""}"${style} data-tag="${esc(t)}">${label}${count}${x}</span>`;
 }
 const priClass = p => (p ?? 0) >= 70 ? "pri-hi" : (p ?? 0) >= 40 ? "pri-md" : "pri-lo";
+const prettyCat = c => (c || "—").replace(/^\d+_/, "").replace(/_/g, " ");
 function allTags() {
   const m = new Map();
-  REFS.forEach(r => tagsOf(r).forEach(t => m.set(t, (m.get(t) || 0) + 1)));
+  scopedRefs().forEach(r => tagsOf(r).forEach(t => m.set(t, (m.get(t) || 0) + 1)));
   return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 
 function visible() {
   const q = filter.trim().toLowerCase();
-  let rows = REFS.filter(r => {
-    if (notesOnly && !hasNote(r.citation_key)) return false;
+  let rows = scopedRefs().filter(r => {
+    if (notesOnly && !hasNote(r.ref_id)) return false;
     if (statusF && (r.status || "") !== statusF) return false;
     if (chapterF && (r.chapter || "") !== chapterF) return false;
     if (tagFilter.size && ![...tagFilter].every(t => tagsOf(r).includes(t))) return false;
     if (!q) return true;
-    return [r.citation_key, r.title, r.authors, r.venue, tagsOf(r).map(objName).join(" ")]
+    return [r.ref_id, r.title, r.authors, r.venue, tagsOf(r).map(objName).join(" ")]
       .some(v => (v || "").toString().toLowerCase().includes(q));
   });
   return rows.sort((a, b) => {
@@ -88,20 +93,22 @@ function renderTagBar() {
 
 function render() {
   const rows = visible();
+  const archiveScope = scopeF === "archive";
   const body = rows.map(r => {
-    const note = hasNote(r.citation_key);
+    const note = hasNote(r.ref_id);
     const pdf = r.pdf_object ? '<span class="has-pdf-pill">PDF</span>' : "";
     const tg = tagsOf(r);
     const ordered = [...tg.filter(isObj), ...tg.filter(t => !isObj(t))];
     const chips = ordered.map(t => tagChip(t)).join("");
     const p = r.reading_priority;
-    return `<tr class="ref-row${note ? " has-note" : ""}" data-key="${esc(r.citation_key)}">
+    const col6 = r.corpus === "archive" ? esc(prettyCat(r.primary_category)) : esc(r.chapter || "—");
+    return `<tr class="ref-row${note ? " has-note" : ""}" data-key="${esc(r.ref_id)}">
       <td class="num"><span class="pri ${priClass(p)}">${p == null ? "—" : p}</span></td>
-      <td class="key">${esc(r.citation_key)}${note ? ' <span class="notemark" title="has notes">📝</span>' : ""}</td>
+      <td class="key">${esc(r.ref_id)}${note ? ' <span class="notemark" title="has notes">📝</span>' : ""}</td>
       <td><div class="ti">${esc(r.title || "")}${pdf}</div>${chips ? `<div class="cell-tags">${chips}</div>` : ""}</td>
       <td class="num">${fmt(r.year)}</td>
       <td>${r.status ? `<span class="badge s-${esc(r.status)}" title="${esc(STATUS_LABEL[r.status] || r.status)}">${esc(r.status)}</span>` : "—"}</td>
-      <td>${esc(r.chapter || "—")}</td>
+      <td>${col6}</td>
     </tr>`;
   }).join("") || `<tr><td colspan="6" class="muted">No references match.</td></tr>`;
 
@@ -109,13 +116,16 @@ function render() {
   document.getElementById("bib").innerHTML = `
     <thead><tr>
       <th data-k="reading_priority">Pri${arrows("reading_priority")}</th>
-      <th data-k="citation_key">Key${arrows("citation_key")}</th>
+      <th data-k="ref_id">Key${arrows("ref_id")}</th>
       <th data-k="title">Title${arrows("title")}</th>
       <th data-k="year">Year${arrows("year")}</th>
       <th data-k="status">Status${arrows("status")}</th>
-      <th data-k="chapter">Chapter${arrows("chapter")}</th>
+      <th data-k="${archiveScope ? "primary_category" : "chapter"}">${archiveScope ? "Category" : "Chapter"}${arrows(archiveScope ? "primary_category" : "chapter")}</th>
     </tr></thead><tbody>${body}</tbody>`;
+  const scoped = scopedRefs();
   document.getElementById("count").textContent = rows.length;
+  document.getElementById("total").textContent = scoped.length;
+  document.getElementById("pdfcount").textContent = scoped.filter(r => r.pdf_object).length;
   const nc = document.getElementById("notecount");
   if (nc) nc.textContent = `${noteCount()} with notes`;
   renderTagBar();
@@ -127,7 +137,7 @@ async function openReader(key) {
   if (!r) return;
   openKey = key;
   const panel = document.getElementById("reader-panel");
-  panel.querySelector(".rp-key").textContent = r.citation_key;
+  panel.querySelector(".rp-key").textContent = r.ref_id;
   panel.querySelector(".rp-title").textContent = (r.title || "").replace(/<[^>]+>/g, "");
   panel.querySelector(".rp-meta").innerHTML =
     `${esc(r.authors || "")}${r.year ? " (" + r.year + ")" : ""}${r.venue ? " — " + esc(r.venue) : ""}`;
@@ -143,7 +153,7 @@ async function openReader(key) {
   pane.innerHTML = '<div class="placeholder">Loading…</div>';
   if (r.pdf_object) {
     try {
-      const { data, error } = await window.kbAuth.sb.storage.from(PDF_BUCKET).createSignedUrl(r.pdf_object, 3600);
+      const { data, error } = await window.kbAuth.sb.storage.from(r.bucket || "kb-pdfs").createSignedUrl(r.pdf_object, 3600);
       if (error || !data?.signedUrl) throw new Error(error?.message || "no signed URL");
       if (openKey === key) pane.innerHTML = `<iframe src="${esc(data.signedUrl)}#view=FitH" title="PDF"></iframe>`;
     } catch (e) {
@@ -185,20 +195,24 @@ function setRpStatus(text, cls) {
   if (s) { s.className = "note-status " + (cls || ""); s.textContent = text; }
 }
 
-async function patchBib(key, patch) {
-  await kbFetch(`kb_bib?citation_key=eq.${encodeURIComponent(key)}`,
+// Route an edit to the right base table (curated -> kb_bib, archive -> kb_archive).
+async function patchRef(r, patch) {
+  const tbl = r.corpus === "archive" ? "kb_archive" : "kb_bib";
+  const col = r.corpus === "archive" ? "arxiv_id" : "citation_key";
+  await kbFetch(`${tbl}?${col}=eq.${encodeURIComponent(r.ref_id)}`,
     { method: "PATCH", prefer: "return=minimal", body: patch });
-  const r = refByKey(key); if (r) Object.assign(r, patch);
+  Object.assign(r, patch);
 }
 async function savePriority(key) {
+  const r = refByKey(key);
   const v = document.getElementById("rp-pri").value;
   const n = v === "" ? null : Math.max(0, Math.min(100, parseInt(v, 10) || 0));
-  try { await patchBib(key, { reading_priority: n }); render(); }
+  try { await patchRef(r, { reading_priority: n }); render(); }
   catch (e) { setRpStatus(e.message, "error"); }
 }
 async function setTags(key, next) {
   const r = refByKey(key);
-  try { await patchBib(key, { tags: next }); renderReaderMeta(r); render(); }
+  try { await patchRef(r, { tags: next }); renderReaderMeta(r); render(); }
   catch (e) { setRpStatus(e.message, "error"); }
 }
 function addTheme(key, tag) {
@@ -221,12 +235,28 @@ async function saveNote(key) {
   try {
     await kbFetch("xo_ref_notes", {
       method: "POST", prefer: "resolution=merge-duplicates,return=representation",
-      body: { citation_key: key, body: ta.value }
+      body: { citation_key: key, body: ta.value }      // citation_key column holds the ref_id
     });
     NOTES[key] = ta.value;
     setRpStatus("Saved ✓", "saved");
     render();
   } catch (err) { setRpStatus(err.message, "error"); }
+}
+
+// Lazily pull the ~2.1k archive rows the first time the user leaves the curated scope.
+async function loadArchive() {
+  if (archiveLoaded) return;
+  const sel = document.getElementById("scope-f");
+  const cnt = document.getElementById("count");
+  if (sel) sel.disabled = true;
+  if (cnt) cnt.textContent = "loading…";
+  try {
+    const rows = await kbFetchAll(`kb_library?corpus=eq.archive&select=${LIB_COLS}&order=ref_id`);
+    REFS = REFS.concat(rows || []);
+    archiveLoaded = true;
+  } finally {
+    if (sel) sel.disabled = false;
+  }
 }
 
 // canonical object names for autocomplete (xo_* tables + already-used object tags)
@@ -246,8 +276,8 @@ async function loadObjects() {
   await window.kbAuth.requireOwner({ onReady: async (user) => {
     try {
       const [refs, notes] = await Promise.all([
-        kbFetch("kb_bib?select=citation_key,title,authors,year,venue,doi,arxiv_id,status,themes,chapter,raw_path,wiki_source_page,pdf_object,abstract,reading_priority,tags&order=reading_priority.desc"),
-        kbFetch("xo_ref_notes?select=citation_key,body")
+        kbFetchAll(`kb_library?corpus=eq.curated&select=${LIB_COLS}&order=ref_id`),
+        kbFetchAll("xo_ref_notes?select=citation_key,body&order=citation_key")
       ]);
       REFS = refs || [];
       (notes || []).forEach(n => { NOTES[n.citation_key] = n.body || ""; });
@@ -255,11 +285,15 @@ async function loadObjects() {
       const chapters = [...new Set(REFS.map(r => r.chapter).filter(Boolean))].sort();
       const chapOpts = chapters.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
       const statusOpts = Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}">${k} — ${v}</option>`).join("");
-      const pdfCount = REFS.filter(r => r.pdf_object).length;
 
       mount(renderHeader("bibliography.html", user) + `<main>
-        <h2 class="section-title">Bibliography <span class="muted">(<span id="count">0</span> of ${REFS.length} · ${pdfCount} with PDF · <span id="notecount" class="notecount">0 with notes</span>)</span></h2>
+        <h2 class="section-title">Bibliography <span class="muted">(<span id="count">0</span> of <span id="total">0</span> · <span id="pdfcount">0</span> with PDF · <span id="notecount" class="notecount">0 with notes</span>)</span></h2>
         <div class="bib-toolbar">
+          <select id="scope-f" title="Which corpus to browse">
+            <option value="curated">Curated bibliography</option>
+            <option value="archive">arXiv archive</option>
+            <option value="">All papers</option>
+          </select>
           <input class="search" id="search" type="search" placeholder="Search key, title, author, venue, tag…" autocomplete="off">
           <select id="status-f"><option value="">All statuses</option>${statusOpts}</select>
           <select id="chapter-f"><option value="">All chapters</option>${chapOpts}</select>
@@ -267,7 +301,6 @@ async function loadObjects() {
         </div>
         <div class="tagbar" id="tagbar"></div>
         <table class="bib" id="bib"></table>
-        ${REFS.length ? "" : '<div class="notice">No references yet. Run <code>generate_bib_seed.py</code> and apply <code>seed_bib.sql</code>.</div>'}
       </main>` + renderFooter() + `
       <div id="reader-panel" class="reader-panel hidden">
         <div class="rp-head">
@@ -307,6 +340,12 @@ async function loadObjects() {
       wireSignOut();
       render();
 
+      document.getElementById("scope-f").addEventListener("change", async e => {
+        scopeF = e.target.value;
+        tagFilter.clear();                       // tags differ across corpora
+        if (scopeF !== "curated" && !archiveLoaded) await loadArchive();
+        render();
+      });
       document.getElementById("search").addEventListener("input", e => { filter = e.target.value; render(); });
       document.getElementById("status-f").addEventListener("change", e => { statusF = e.target.value; render(); });
       document.getElementById("chapter-f").addEventListener("change", e => { chapterF = e.target.value; render(); });

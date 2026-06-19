@@ -63,6 +63,19 @@ async function kbFetch(path, opts = {}) {
   return txt ? JSON.parse(txt) : null;
 }
 
+// Fetch ALL rows of a REST query, paging past PostgREST's 1000-row cap. Pass a
+// stable &order=<unique col> so paging can't skip/duplicate rows.
+async function kbFetchAll(path, pageSize = 1000) {
+  const sep = path.includes("?") ? "&" : "?";
+  let offset = 0, out = [];
+  for (;;) {
+    const rows = (await kbFetch(`${path}${sep}limit=${pageSize}&offset=${offset}`)) || [];
+    out = out.concat(rows);
+    if (rows.length < pageSize) return out;
+    offset += pageSize;
+  }
+}
+
 // Call a Postgres function (RPC) with the user JWT.
 async function kbRpc(fn, args) {
   const token = (await window.kbAuth.getAccessToken()) || KB.anonKey;

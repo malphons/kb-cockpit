@@ -32,10 +32,20 @@ Supabase dashboards). The site code is already built; the anon key is already in
    - Redirect allow-list: add `https://malphons.github.io/kb-cockpit/` **and**
      `http://localhost:8778/` (for local preview).
 
-## D. Database migration
-6. Supabase → **SQL editor** → run `exoplanets/db/migrations/kb_cockpit_schema.sql`
-   (from the KB repo). It only ADDS tables — verify the existing `xo_*` policies
-   are unchanged afterward.
+## D. Database migrations
+6. Supabase → **SQL editor** → run these migrations from the KB repo's
+   `exoplanets/db/migrations/`, in order (each only ADDS objects — verify the
+   existing `xo_*` policies are unchanged afterward):
+   1. `kb_cockpit_schema.sql` — kb_pages, kb_bib, xo_ref_notes, RLS
+   2. `kb_bib_abstract.sql` — abstract column on kb_bib
+   3. `kb_bib_priority_tags.sql` — reading_priority + editable tags
+   4. `kb_pdfs_storage.sql` — private `kb-pdfs` bucket + pdf_object
+   5. `kb_archive_storage.sql` — private `kb-archive` bucket + kb_archive table
+   6. `kb_archive_annotations.sql` — archive tags/priority + the unified
+      `kb_library` view the Bibliography page reads (curated + archive)
+
+   For the archive's larger PDFs, also raise the project upload limit:
+   **Project Settings → Storage → "Upload file size limit" → 100 MB**.
 
 ## E. Make yourself the owner
 7. Open the deployed site and **sign in once** with GitHub (this creates your
