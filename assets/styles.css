@@ -171,6 +171,31 @@ table.bib .key { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; fo
 .note-status.saving { color: var(--warn); }
 .note-status.error { color: var(--bad); }
 
+/* priority + tag chips + tag bar + tag editor */
+table.bib td.num { white-space: nowrap; }
+.pri { display: inline-block; min-width: 30px; text-align: center; padding: 1px 7px; border-radius: 6px; font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pri-hi { background: rgba(58,168,107,.22); color: #74e0a4; border: 1px solid rgba(58,168,107,.5); }
+.pri-md { background: rgba(199,154,58,.20); color: #e0bd6e; border: 1px solid rgba(199,154,58,.5); }
+.pri-lo { background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+table.bib .ti { display: inline; }
+.cell-tags { margin-top: 5px; display: flex; gap: 5px; flex-wrap: wrap; }
+.tagchip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; font-size: 11.5px; cursor: pointer; line-height: 1.7; white-space: nowrap; }
+.tagchip:hover { filter: brightness(1.25); }
+.tagchip.active { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tagchip.obj { background: rgba(108,182,255,.14); border-color: rgba(108,182,255,.55); color: #bcdcff; }
+.tagbar-sep { display: inline-block; width: 1px; height: 16px; background: var(--line); margin: 0 4px; vertical-align: middle; }
+.tagchip .tn { opacity: .65; font-size: 10.5px; }
+.tagchip .x { cursor: pointer; font-weight: 700; opacity: .7; padding: 0 1px; }
+.tagchip .x:hover { opacity: 1; }
+.tagbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.tagbar-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; margin-right: 2px; }
+.link-btn { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: 12.5px; padding: 0 4px; }
+.link-btn:hover { text-decoration: underline; }
+.rp-field { margin-bottom: 14px; }
+.rp-pri-input { width: 110px; }
+.tag-edit { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; min-height: 24px; }
+#rp-tag-input { width: 100%; }
+
 /* has-notes affordances */
 table.bib .notemark { color: var(--accent-2); cursor: default; }
 table.bib tr.has-note .key { font-weight: 600; }

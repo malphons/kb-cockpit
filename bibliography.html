@@ -13,13 +13,35 @@
 <script src="assets/auth.js"></script>
 <script src="assets/app.js"></script>
 <script>
-let REFS = [], NOTES = {}, filter = "", statusF = "", chapterF = "", notesOnly = false,
-    sortKey = "citation_key", sortDir = 1, openKey = null;
+let REFS = [], NOTES = {}, OBJECTS = [], filter = "", statusF = "", chapterF = "", notesOnly = false,
+    tagFilter = new Set(), sortKey = "reading_priority", sortDir = -1, openKey = null;
 const STATUS_LABEL = { Q: "queued", S: "skimmed", R: "read", N: "read+notes", C: "cited" };
-
 const PDF_BUCKET = "kb-pdfs";
+
 const hasNote = k => !!(NOTES[k] && NOTES[k].trim());
 const noteCount = () => Object.keys(NOTES).filter(hasNote).length;
+const tagsOf = r => Array.isArray(r.tags) ? r.tags : [];
+const refByKey = k => REFS.find(r => r.citation_key === k);
+const isObj = t => t.startsWith("@");           // object/target tags are '@'-prefixed
+const objName = t => t.replace(/^@/, "");
+
+// deterministic per-tag color (themes); objects use a fixed style via .obj class
+function hashHue(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return h; }
+function tagStyle(t) { const h = hashHue(t); return `background:hsl(${h} 38% 19%);border-color:hsl(${h} 45% 40%);color:hsl(${h} 70% 82%);`; }
+function tagChip(t, opt = {}) {
+  const obj = isObj(t);
+  const label = obj ? "🪐 " + esc(objName(t)) : esc(t);
+  const x = opt.removable ? ` <span class="x" data-rmtag="${esc(t)}" title="remove">×</span>` : "";
+  const count = opt.count != null ? ` <span class="tn">${opt.count}</span>` : "";
+  const style = obj ? "" : ` style="${tagStyle(t)}"`;
+  return `<span class="tagchip${obj ? " obj" : ""}${opt.active ? " active" : ""}"${style} data-tag="${esc(t)}">${label}${count}${x}</span>`;
+}
+const priClass = p => (p ?? 0) >= 70 ? "pri-hi" : (p ?? 0) >= 40 ? "pri-md" : "pri-lo";
+function allTags() {
+  const m = new Map();
+  REFS.forEach(r => tagsOf(r).forEach(t => m.set(t, (m.get(t) || 0) + 1)));
+  return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
 
 function visible() {
   const q = filter.trim().toLowerCase();
@@ -27,18 +49,18 @@ function visible() {
     if (notesOnly && !hasNote(r.citation_key)) return false;
     if (statusF && (r.status || "") !== statusF) return false;
     if (chapterF && (r.chapter || "") !== chapterF) return false;
+    if (tagFilter.size && ![...tagFilter].every(t => tagsOf(r).includes(t))) return false;
     if (!q) return true;
-    return [r.citation_key, r.title, r.authors, r.venue, (r.themes || []).join(" ")]
+    return [r.citation_key, r.title, r.authors, r.venue, tagsOf(r).map(objName).join(" ")]
       .some(v => (v || "").toString().toLowerCase().includes(q));
   });
   return rows.sort((a, b) => {
-    const x = a[sortKey], y = b[sortKey];
+    let x = a[sortKey], y = b[sortKey];
     if (x == null) return 1; if (y == null) return -1;
     return (x > y ? 1 : x < y ? -1 : 0) * sortDir;
   });
 }
 
-// External source URL as-is; otherwise a GitHub blob link into the (private) KB repo.
 function refLinks(r) {
   const out = [];
   if (r.doi) out.push(`<a href="https://doi.org/${esc(r.doi)}" target="_blank" rel="noopener">DOI</a>`);
@@ -52,23 +74,41 @@ function refLinks(r) {
   return out.join(" · ");
 }
 
+function renderTagBar() {
+  const bar = document.getElementById("tagbar");
+  if (!bar) return;
+  const all = allTags();
+  const objs = all.filter(([t]) => isObj(t)), themes = all.filter(([t]) => !isObj(t));
+  const grp = (label, list) => list.length
+    ? `<span class="tagbar-label">${label}</span> ${list.map(([t, n]) => tagChip(t, { count: n, active: tagFilter.has(t) })).join("")}` : "";
+  const sep = objs.length && themes.length ? '<span class="tagbar-sep"></span>' : "";
+  const clear = tagFilter.size ? ` <button class="link-btn" id="tag-clear">clear ${tagFilter.size}</button>` : "";
+  bar.innerHTML = `${grp("Objects", objs)} ${sep} ${grp("Themes", themes)}${clear}`;
+}
+
 function render() {
   const rows = visible();
   const body = rows.map(r => {
     const note = hasNote(r.citation_key);
     const pdf = r.pdf_object ? '<span class="has-pdf-pill">PDF</span>' : "";
+    const tg = tagsOf(r);
+    const ordered = [...tg.filter(isObj), ...tg.filter(t => !isObj(t))];
+    const chips = ordered.map(t => tagChip(t)).join("");
+    const p = r.reading_priority;
     return `<tr class="ref-row${note ? " has-note" : ""}" data-key="${esc(r.citation_key)}">
+      <td class="num"><span class="pri ${priClass(p)}">${p == null ? "—" : p}</span></td>
       <td class="key">${esc(r.citation_key)}${note ? ' <span class="notemark" title="has notes">📝</span>' : ""}</td>
-      <td>${esc(r.title || "")}${pdf}</td>
+      <td><div class="ti">${esc(r.title || "")}${pdf}</div>${chips ? `<div class="cell-tags">${chips}</div>` : ""}</td>
       <td class="num">${fmt(r.year)}</td>
       <td>${r.status ? `<span class="badge s-${esc(r.status)}" title="${esc(STATUS_LABEL[r.status] || r.status)}">${esc(r.status)}</span>` : "—"}</td>
       <td>${esc(r.chapter || "—")}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="5" class="muted">No references match.</td></tr>`;
+  }).join("") || `<tr><td colspan="6" class="muted">No references match.</td></tr>`;
 
   const arrows = k => sortKey === k ? (sortDir > 0 ? " ▲" : " ▼") : "";
   document.getElementById("bib").innerHTML = `
     <thead><tr>
+      <th data-k="reading_priority">Pri${arrows("reading_priority")}</th>
       <th data-k="citation_key">Key${arrows("citation_key")}</th>
       <th data-k="title">Title${arrows("title")}</th>
       <th data-k="year">Year${arrows("year")}</th>
@@ -78,40 +118,34 @@ function render() {
   document.getElementById("count").textContent = rows.length;
   const nc = document.getElementById("notecount");
   if (nc) nc.textContent = `${noteCount()} with notes`;
+  renderTagBar();
 }
 
-// ---- reading panel (PDF left, notes right) ----
-function refByKey(k) { return REFS.find(r => r.citation_key === k); }
-
+// ---- reading panel ----
 async function openReader(key) {
   const r = refByKey(key);
   if (!r) return;
   openKey = key;
   const panel = document.getElementById("reader-panel");
-  const note = NOTES[key] || "";
   panel.querySelector(".rp-key").textContent = r.citation_key;
   panel.querySelector(".rp-title").textContent = (r.title || "").replace(/<[^>]+>/g, "");
   panel.querySelector(".rp-meta").innerHTML =
     `${esc(r.authors || "")}${r.year ? " (" + r.year + ")" : ""}${r.venue ? " — " + esc(r.venue) : ""}`;
   panel.querySelector(".rp-links").innerHTML = refLinks(r) || '<span class="muted">no links</span>';
+  document.getElementById("rp-pri").value = r.reading_priority ?? "";
+  renderReaderMeta(r);
   const ta = panel.querySelector("#rp-note");
-  ta.value = note;
-  setRpStatus(note ? "loaded" : "", "");
+  ta.value = NOTES[key] || "";
+  setRpStatus(NOTES[key] ? "loaded" : "", "");
   panel.classList.remove("hidden");
-  ta.focus();
 
-  // PDF pane
   const pane = panel.querySelector(".rp-pdf");
-  pane.innerHTML = '<div class="placeholder">Loading PDF…</div>';
+  pane.innerHTML = '<div class="placeholder">Loading…</div>';
   if (r.pdf_object) {
     try {
-      const { data, error } = await window.kbAuth.sb
-        .storage.from(PDF_BUCKET).createSignedUrl(r.pdf_object, 3600);
+      const { data, error } = await window.kbAuth.sb.storage.from(PDF_BUCKET).createSignedUrl(r.pdf_object, 3600);
       if (error || !data?.signedUrl) throw new Error(error?.message || "no signed URL");
-      // only render if this is still the open paper
-      if (openKey === key) {
-        pane.innerHTML = `<iframe src="${esc(data.signedUrl)}#view=FitH" title="PDF"></iframe>`;
-      }
+      if (openKey === key) pane.innerHTML = `<iframe src="${esc(data.signedUrl)}#view=FitH" title="PDF"></iframe>`;
     } catch (e) {
       pane.innerHTML = `<div class="placeholder"><div>Couldn't load PDF.<br><span class="muted">${esc(e.message)}</span></div></div>`;
     }
@@ -125,24 +159,60 @@ async function openReader(key) {
       <div class="rp-abs-foot"><span class="muted">Abstract text (proxy for the full paper).</span> ${link}</div>
     </article>`;
   } else if (r.raw_path && /^https?:\/\//i.test(r.raw_path)) {
-    pane.innerHTML = `<div class="placeholder">
-      <div>This reference is a conference / web abstract, not a hosted PDF.</div>
-      <a class="btn" href="${esc(r.raw_path)}" target="_blank" rel="noopener">Open abstract ↗</a>
-    </div>`;
+    pane.innerHTML = `<div class="placeholder"><div>This reference is a conference / web abstract, not a hosted PDF.</div>
+      <a class="btn" href="${esc(r.raw_path)}" target="_blank" rel="noopener">Open abstract ↗</a></div>`;
   } else {
     pane.innerHTML = `<div class="placeholder"><div>No PDF or abstract for this reference.</div></div>`;
   }
 }
 
+function renderReaderMeta(r) {
+  const objs = tagsOf(r).filter(isObj), themes = tagsOf(r).filter(t => !isObj(t));
+  document.getElementById("rp-objs").innerHTML = objs.map(t => tagChip(t, { removable: true })).join("") || '<span class="muted">none</span>';
+  document.getElementById("rp-tags").innerHTML = themes.map(t => tagChip(t, { removable: true })).join("") || '<span class="muted">no tags</span>';
+  document.getElementById("rp-obj-list").innerHTML = OBJECTS.map(o => `<option value="${esc(o)}">`).join("");
+  document.getElementById("rp-tag-list").innerHTML =
+    allTags().filter(([t]) => !isObj(t)).map(([t]) => `<option value="${esc(t)}">`).join("");
+}
+
 function closeReader() {
   openKey = null;
   document.getElementById("reader-panel").classList.add("hidden");
-  document.querySelector(".rp-pdf").innerHTML = ""; // stop the iframe
+  document.querySelector(".rp-pdf").innerHTML = "";
 }
-
 function setRpStatus(text, cls) {
   const s = document.getElementById("rp-status");
   if (s) { s.className = "note-status " + (cls || ""); s.textContent = text; }
+}
+
+async function patchBib(key, patch) {
+  await kbFetch(`kb_bib?citation_key=eq.${encodeURIComponent(key)}`,
+    { method: "PATCH", prefer: "return=minimal", body: patch });
+  const r = refByKey(key); if (r) Object.assign(r, patch);
+}
+async function savePriority(key) {
+  const v = document.getElementById("rp-pri").value;
+  const n = v === "" ? null : Math.max(0, Math.min(100, parseInt(v, 10) || 0));
+  try { await patchBib(key, { reading_priority: n }); render(); }
+  catch (e) { setRpStatus(e.message, "error"); }
+}
+async function setTags(key, next) {
+  const r = refByKey(key);
+  try { await patchBib(key, { tags: next }); renderReaderMeta(r); render(); }
+  catch (e) { setRpStatus(e.message, "error"); }
+}
+function addTheme(key, tag) {
+  tag = (tag || "").trim().replace(/^@+/, "").replace(/\s+/g, "_").toLowerCase();
+  if (!tag) return;
+  setTags(key, [...new Set([...tagsOf(refByKey(key)), tag])]);
+}
+function addObject(key, name) {
+  name = (name || "").trim().replace(/^@+/, "");      // keep object casing (WASP-39b)
+  if (!name) return;
+  setTags(key, [...new Set([...tagsOf(refByKey(key)), "@" + name])]);
+}
+function removeTag(key, tag) {
+  setTags(key, tagsOf(refByKey(key)).filter(t => t !== tag));
 }
 
 async function saveNote(key) {
@@ -150,57 +220,83 @@ async function saveNote(key) {
   setRpStatus("Saving…", "saving");
   try {
     await kbFetch("xo_ref_notes", {
-      method: "POST",
-      prefer: "resolution=merge-duplicates,return=representation",
+      method: "POST", prefer: "resolution=merge-duplicates,return=representation",
       body: { citation_key: key, body: ta.value }
     });
     NOTES[key] = ta.value;
     setRpStatus("Saved ✓", "saved");
-    render(); // refresh badge, has-note class, counter
-  } catch (err) {
-    setRpStatus(err.message, "error");
-  }
+    render();
+  } catch (err) { setRpStatus(err.message, "error"); }
+}
+
+// canonical object names for autocomplete (xo_* tables + already-used object tags)
+async function loadObjects() {
+  const names = new Set();
+  REFS.forEach(r => tagsOf(r).filter(isObj).forEach(t => names.add(objName(t))));
+  try {
+    const [pl, st, sy] = await Promise.all([
+      kbFetch("xo_planets?select=name"), kbFetch("xo_stars?select=name"), kbFetch("xo_systems?select=name")
+    ]);
+    [pl, st, sy].forEach(arr => (arr || []).forEach(x => x.name && names.add(x.name)));
+  } catch (e) { /* fall back to existing object tags only */ }
+  OBJECTS = [...names].sort();
 }
 
 (async function () {
   await window.kbAuth.requireOwner({ onReady: async (user) => {
     try {
       const [refs, notes] = await Promise.all([
-        kbFetch("kb_bib?select=citation_key,title,authors,year,venue,doi,arxiv_id,status,themes,chapter,raw_path,wiki_source_page,pdf_object,abstract&order=citation_key"),
+        kbFetch("kb_bib?select=citation_key,title,authors,year,venue,doi,arxiv_id,status,themes,chapter,raw_path,wiki_source_page,pdf_object,abstract,reading_priority,tags&order=reading_priority.desc"),
         kbFetch("xo_ref_notes?select=citation_key,body")
       ]);
       REFS = refs || [];
       (notes || []).forEach(n => { NOTES[n.citation_key] = n.body || ""; });
+      await loadObjects();
       const chapters = [...new Set(REFS.map(r => r.chapter).filter(Boolean))].sort();
       const chapOpts = chapters.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
       const statusOpts = Object.entries(STATUS_LABEL).map(([k, v]) => `<option value="${k}">${k} — ${v}</option>`).join("");
       const pdfCount = REFS.filter(r => r.pdf_object).length;
 
       mount(renderHeader("bibliography.html", user) + `<main>
-        <h2 class="section-title">Bibliography <span class="muted">(<span id="count">0</span> shown of ${REFS.length} · ${pdfCount} with PDF · <span id="notecount" class="notecount">0 with notes</span>)</span></h2>
+        <h2 class="section-title">Bibliography <span class="muted">(<span id="count">0</span> of ${REFS.length} · ${pdfCount} with PDF · <span id="notecount" class="notecount">0 with notes</span>)</span></h2>
         <div class="bib-toolbar">
-          <input class="search" id="search" type="search" placeholder="Search key, title, author, venue, theme…" autocomplete="off">
+          <input class="search" id="search" type="search" placeholder="Search key, title, author, venue, tag…" autocomplete="off">
           <select id="status-f"><option value="">All statuses</option>${statusOpts}</select>
           <select id="chapter-f"><option value="">All chapters</option>${chapOpts}</select>
           <label class="toggle"><input type="checkbox" id="notes-only"> 📝 Has notes</label>
         </div>
+        <div class="tagbar" id="tagbar"></div>
         <table class="bib" id="bib"></table>
         ${REFS.length ? "" : '<div class="notice">No references yet. Run <code>generate_bib_seed.py</code> and apply <code>seed_bib.sql</code>.</div>'}
       </main>` + renderFooter() + `
       <div id="reader-panel" class="reader-panel hidden">
         <div class="rp-head">
-          <span class="rp-key"></span>
-          <span class="rp-title"></span>
-          <span class="spacer"></span>
-          <button id="rp-close">✕ Close</button>
+          <span class="rp-key"></span><span class="rp-title"></span>
+          <span class="spacer"></span><button id="rp-close">✕ Close</button>
         </div>
         <div class="rp-body">
           <div class="rp-pdf"></div>
           <div class="rp-notes">
             <div class="rp-meta"></div>
             <div class="rp-links"></div>
+            <div class="rp-field">
+              <label class="rp-lbl">Reading priority (0–100)</label>
+              <input type="number" id="rp-pri" min="0" max="100" step="1" class="rp-pri-input">
+            </div>
+            <div class="rp-field">
+              <label class="rp-lbl">🪐 Target object (planet / star / system)</label>
+              <div id="rp-objs" class="tag-edit"></div>
+              <input id="rp-obj-input" list="rp-obj-list" placeholder="add object, press Enter" autocomplete="off">
+              <datalist id="rp-obj-list"></datalist>
+            </div>
+            <div class="rp-field">
+              <label class="rp-lbl">Tags</label>
+              <div id="rp-tags" class="tag-edit"></div>
+              <input id="rp-tag-input" list="rp-tag-list" placeholder="add a tag, press Enter" autocomplete="off">
+              <datalist id="rp-tag-list"></datalist>
+            </div>
             <label class="rp-lbl">Notes</label>
-            <textarea id="rp-note" placeholder="Live notes — autosaves when you click away, or hit Save…"></textarea>
+            <textarea id="rp-note" placeholder="Live notes — autosaves when you click away…"></textarea>
             <div class="rp-actions">
               <button class="primary" id="rp-save">Save note</button>
               <span class="note-status" id="rp-status"></span>
@@ -216,20 +312,39 @@ async function saveNote(key) {
       document.getElementById("chapter-f").addEventListener("change", e => { chapterF = e.target.value; render(); });
       document.getElementById("notes-only").addEventListener("change", e => { notesOnly = e.target.checked; render(); });
 
+      document.getElementById("tagbar").addEventListener("click", e => {
+        if (e.target.closest("#tag-clear")) { tagFilter.clear(); render(); return; }
+        const chip = e.target.closest(".tagchip[data-tag]");
+        if (chip) { const t = chip.dataset.tag; tagFilter.has(t) ? tagFilter.delete(t) : tagFilter.add(t); render(); }
+      });
+
       document.getElementById("bib").addEventListener("click", e => {
         const th = e.target.closest("th[data-k]");
-        if (th) { const k = th.dataset.k; if (k === sortKey) sortDir *= -1; else { sortKey = k; sortDir = 1; } render(); return; }
-        if (e.target.closest("a")) return; // let inline links work
+        if (th) { const k = th.dataset.k; if (k === sortKey) sortDir *= -1; else { sortKey = k; sortDir = (k === "reading_priority" ? -1 : 1); } render(); return; }
+        const chip = e.target.closest(".tagchip[data-tag]");
+        if (chip) { const t = chip.dataset.tag; tagFilter.has(t) ? tagFilter.delete(t) : tagFilter.add(t); render(); return; }
+        if (e.target.closest("a")) return;
         const row = e.target.closest(".ref-row");
         if (row) openReader(row.dataset.key);
       });
 
-      // reader panel wiring
       document.getElementById("rp-close").addEventListener("click", closeReader);
       document.getElementById("rp-save").addEventListener("click", () => openKey && saveNote(openKey));
-      // autosave on blur if changed
       document.getElementById("rp-note").addEventListener("blur", () => {
         if (openKey && document.getElementById("rp-note").value !== (NOTES[openKey] || "")) saveNote(openKey);
+      });
+      document.getElementById("rp-pri").addEventListener("change", () => openKey && savePriority(openKey));
+      document.getElementById("rp-obj-input").addEventListener("keydown", e => {
+        if (e.key === "Enter") { e.preventDefault(); addObject(openKey, e.target.value); e.target.value = ""; }
+      });
+      document.getElementById("rp-tag-input").addEventListener("keydown", e => {
+        if (e.key === "Enter") { e.preventDefault(); addTheme(openKey, e.target.value); e.target.value = ""; }
+      });
+      document.getElementById("rp-objs").addEventListener("click", e => {
+        const x = e.target.closest("[data-rmtag]"); if (x && openKey) removeTag(openKey, x.dataset.rmtag);
+      });
+      document.getElementById("rp-tags").addEventListener("click", e => {
+        const x = e.target.closest("[data-rmtag]"); if (x && openKey) removeTag(openKey, x.dataset.rmtag);
       });
       document.addEventListener("keydown", e => { if (e.key === "Escape" && openKey) closeReader(); });
     } catch (err) {
