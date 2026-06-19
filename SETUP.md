@@ -43,6 +43,8 @@ Supabase dashboards). The site code is already built; the anon key is already in
    5. `kb_archive_storage.sql` — private `kb-archive` bucket + kb_archive table
    6. `kb_archive_annotations.sql` — archive tags/priority + the unified
       `kb_library` view the Bibliography page reads (curated + archive)
+   7. `kb_promote.sql` — promote_to_curated() RPC + pdf_bucket/promoted_to
+      (the Bibliography "Promote to curated" button)
 
    For the archive's larger PDFs, also raise the project upload limit:
    **Project Settings → Storage → "Upload file size limit" → 100 MB**.

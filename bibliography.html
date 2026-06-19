@@ -142,6 +142,7 @@ async function openReader(key) {
   panel.querySelector(".rp-meta").innerHTML =
     `${esc(r.authors || "")}${r.year ? " (" + r.year + ")" : ""}${r.venue ? " — " + esc(r.venue) : ""}`;
   panel.querySelector(".rp-links").innerHTML = refLinks(r) || '<span class="muted">no links</span>';
+  document.getElementById("rp-promote-row").style.display = r.corpus === "archive" ? "" : "none";
   document.getElementById("rp-pri").value = r.reading_priority ?? "";
   renderReaderMeta(r);
   const ta = panel.querySelector("#rp-note");
@@ -243,6 +244,24 @@ async function saveNote(key) {
   } catch (err) { setRpStatus(err.message, "error"); }
 }
 
+// Promote an archive paper into the curated bibliography (server-side, atomic).
+async function promote(key) {
+  const r = refByKey(key);
+  if (!r || r.corpus !== "archive") return;
+  setRpStatus("Promoting…", "saving");
+  try {
+    const res = await kbRpc("promote_to_curated", { p_arxiv_id: r.ref_id });
+    const newKey = Array.isArray(res) ? res[0] : res;       // RPC returns the new citation key
+    REFS = REFS.filter(x => x.ref_id !== r.ref_id);         // archive row is now hidden
+    if (NOTES[r.ref_id] && !NOTES[newKey]) NOTES[newKey] = NOTES[r.ref_id];
+    const rows = await kbFetch(`kb_library?corpus=eq.curated&ref_id=eq.${encodeURIComponent(newKey)}&select=${LIB_COLS}`);
+    if (rows && rows[0]) REFS.push(rows[0]);                // surface it under Curated immediately
+    setRpStatus(`Promoted → ${newKey} ✓`, "saved");
+    closeReader();
+    render();
+  } catch (e) { setRpStatus(e.message, "error"); }
+}
+
 // Lazily pull the ~2.1k archive rows the first time the user leaves the curated scope.
 async function loadArchive() {
   if (archiveLoaded) return;
@@ -312,6 +331,10 @@ async function loadObjects() {
           <div class="rp-notes">
             <div class="rp-meta"></div>
             <div class="rp-links"></div>
+            <div class="rp-promote-row" id="rp-promote-row" style="display:none">
+              <button class="primary" id="rp-promote">⭐ Promote to curated</button>
+              <span class="muted">adds this archive paper to your curated bibliography</span>
+            </div>
             <div class="rp-field">
               <label class="rp-lbl">Reading priority (0–100)</label>
               <input type="number" id="rp-pri" min="0" max="100" step="1" class="rp-pri-input">
@@ -369,6 +392,7 @@ async function loadObjects() {
 
       document.getElementById("rp-close").addEventListener("click", closeReader);
       document.getElementById("rp-save").addEventListener("click", () => openKey && saveNote(openKey));
+      document.getElementById("rp-promote").addEventListener("click", () => openKey && promote(openKey));
       document.getElementById("rp-note").addEventListener("blur", () => {
         if (openKey && document.getElementById("rp-note").value !== (NOTES[openKey] || "")) saveNote(openKey);
       });
