@@ -79,12 +79,12 @@ async function kbRpc(fn, args) {
 }
 
 // Call the kb-chat Edge Function with the user JWT. Returns { answer, citations, model }.
-async function kbChat(question, model) {
+async function kbChat(question, model, threadId) {
   const token = await window.kbAuth.getAccessToken();
   const res = await fetch(`${KB.functionsUrl}/kb-chat`, {
     method: "POST",
     headers: { apikey: KB.anonKey, Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ question, model })
+    body: JSON.stringify({ question, model, thread_id: threadId })
   });
   if (!res.ok) {
     const t = await res.text().catch(() => "");

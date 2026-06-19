@@ -15,68 +15,186 @@
 <script src="assets/app.js"></script>
 <script src="assets/md.js"></script>
 <script>
-function appendMsg(role, html, cites) {
+let THREADS = [], cur = null;   // cur = current thread row, or null for a new (unsaved) thread
+
+// ---- data ----
+const fetchThreads = () => kbFetch("kb_chat_threads?select=id,title,grp,created_at,updated_at&order=updated_at.desc");
+const fetchMessages = id => kbFetch(`kb_chat_log?select=question,answer,model,cited_paths,created_at&thread_id=eq.${id}&order=created_at.asc`);
+async function createThread(title) {
+  const rows = await kbFetch("kb_chat_threads", { method: "POST", prefer: "return=representation", body: { title: (title || "New thread").slice(0, 80) } });
+  return rows && rows[0];
+}
+const patchThread = (id, patch) => kbFetch(`kb_chat_threads?id=eq.${id}`, { method: "PATCH", prefer: "return=minimal", body: patch });
+const deleteThreadRow = id => kbFetch(`kb_chat_threads?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+
+// ---- sidebar ----
+function groupsList() {
+  return [...new Set(THREADS.map(t => t.grp).filter(Boolean))].sort();
+}
+function renderSidebar() {
+  const groups = new Map();           // grp -> threads (preserves updated_at order)
+  THREADS.forEach(t => {
+    const g = t.grp || "Ungrouped";
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(t);
+  });
+  const order = [...groups.keys()].sort((a, b) => a === "Ungrouped" ? 1 : b === "Ungrouped" ? -1 : a.localeCompare(b));
+  const html = order.map(g => {
+    const items = groups.get(g).map(t => `
+      <div class="thread-item${cur && cur.id === t.id ? " active" : ""}" data-id="${t.id}">
+        ${esc(t.title || "Untitled")}<span class="t-time">${timeAgo(t.updated_at)}</span>
+      </div>`).join("");
+    return `<div class="tgroup-label">${esc(g)}</div>${items}`;
+  }).join("");
+  document.getElementById("thread-list").innerHTML =
+    html || '<p class="muted" style="padding:8px 4px;font-size:13px">No threads yet. Start one below.</p>';
+}
+
+// ---- chat rendering ----
+function citeLinks(paths) {
+  if (!paths || !paths.length) return "";
+  return `<div class="cites">${paths.map(p =>
+    `<a href="navigator.html?path=${encodeURIComponent(p)}">${esc(p.split("/").pop())}</a>`).join("")}</div>`;
+}
+function appendMsg(role, html, citesHtml) {
   const log = document.getElementById("chat-log");
-  const citeHtml = (cites && cites.length)
-    ? `<div class="cites">${cites.map(c => `<a href="navigator.html?path=${encodeURIComponent(c.path)}">${esc(c.title || c.path)}</a>`).join("")}</div>`
-    : "";
   const div = document.createElement("div");
   div.className = "msg " + role;
-  div.innerHTML = `<div class="role">${role === "user" ? "You" : "Assistant"}</div><div class="bubble">${html}</div>${citeHtml}`;
+  div.innerHTML = `<div class="role">${role === "user" ? "You" : "Assistant"}</div><div class="bubble">${html}</div>${citesHtml || ""}`;
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
   return div;
 }
+const WELCOME = `<div class="msg assistant"><div class="role">Assistant</div>
+  <div class="bubble"><p>Ask anything about the knowledge base. Answers are grounded in your KB pages and cite the sources they used.</p>
+  <p class="muted">Threads are saved automatically — find them in the sidebar and group them by topic.</p></div></div>`;
 
+async function renderMessages() {
+  const log = document.getElementById("chat-log");
+  if (!cur) { log.innerHTML = WELCOME; return; }
+  log.innerHTML = '<p class="spinner">Loading thread…</p>';
+  try {
+    const msgs = await fetchMessages(cur.id) || [];
+    log.innerHTML = msgs.length ? "" : WELCOME;
+    msgs.forEach(m => {
+      appendMsg("user", esc(m.question));
+      appendMsg("assistant", renderMarkdown(m.answer || "(no answer)", {}), citeLinks(m.cited_paths));
+    });
+    log.scrollTop = log.scrollHeight;
+  } catch (e) { log.innerHTML = `<div class="notice">${esc(e.message)}</div>`; }
+}
+
+function renderHead() {
+  const has = !!cur;
+  document.getElementById("th-title").value = has ? (cur.title || "") : "";
+  document.getElementById("th-title").disabled = !has;
+  const g = document.getElementById("th-group");
+  g.value = has ? (cur.grp || "") : "";
+  g.disabled = !has;
+  document.getElementById("th-delete").disabled = !has;
+  document.getElementById("th-group-list").innerHTML = groupsList().map(x => `<option value="${esc(x)}">`).join("");
+}
+
+async function selectThread(id) {
+  cur = THREADS.find(t => t.id === id) || null;
+  renderSidebar(); renderHead(); await renderMessages();
+  document.getElementById("q").focus();
+}
+function newThread() { cur = null; renderSidebar(); renderHead(); renderMessages(); document.getElementById("q").focus(); }
+
+async function refreshThreads(keepId) {
+  THREADS = await fetchThreads() || [];
+  if (keepId) cur = THREADS.find(t => t.id === keepId) || cur;
+  renderSidebar(); renderHead();
+}
+
+// ---- send ----
 async function send() {
-  const ta = document.getElementById("q");
-  const sel = document.getElementById("model");
-  const btn = document.getElementById("send");
+  const ta = document.getElementById("q"), sel = document.getElementById("model"), btn = document.getElementById("send");
   const question = ta.value.trim();
   if (!question) return;
   ta.value = "";
-  appendMsg("user", esc(question));
-  const thinking = appendMsg("assistant", `<span class="muted">Thinking…</span>`);
   btn.disabled = true;
   try {
-    const out = await kbChat(question, sel.value);
+    if (!cur) {                                   // first message starts a new thread
+      cur = await createThread(question);
+      THREADS.unshift(cur); renderSidebar(); renderHead();
+      document.getElementById("chat-log").innerHTML = "";
+    }
+    appendMsg("user", esc(question));
+    const thinking = appendMsg("assistant", `<span class="muted">Thinking…</span>`);
+    const out = await kbChat(question, sel.value, cur.id);
     thinking.querySelector(".bubble").innerHTML = renderMarkdown(out.answer || "(no answer)", {});
     if (out.citations && out.citations.length) {
-      const c = document.createElement("div");
-      c.className = "cites";
-      c.innerHTML = out.citations.map(ct => `<a href="navigator.html?path=${encodeURIComponent(ct.path)}">${esc(ct.title || ct.path)}</a>`).join("");
-      thinking.appendChild(c);
+      thinking.insertAdjacentHTML("beforeend",
+        `<div class="cites">${out.citations.map(ct => `<a href="navigator.html?path=${encodeURIComponent(ct.path)}">${esc(ct.title || ct.path)}</a>`).join("")}</div>`);
     }
+    await refreshThreads(cur.id);                 // re-sort sidebar by updated_at
   } catch (err) {
-    thinking.querySelector(".bubble").innerHTML = `<span class="note-status error">${esc(err.message)}</span>`;
+    appendMsg("assistant", `<span class="note-status error">${esc(err.message)}</span>`);
   } finally {
     btn.disabled = false;
     document.getElementById("chat-log").scrollTop = 1e9;
+    document.getElementById("q").focus();
   }
 }
 
 (async function () {
-  await window.kbAuth.requireOwner({ onReady: (user) => {
+  await window.kbAuth.requireOwner({ onReady: async (user) => {
     const opts = (KB.chatModels || [KB.chatModelDefault]).map(m =>
       `<option value="${esc(m)}"${m === KB.chatModelDefault ? " selected" : ""}>${esc(m)}</option>`).join("");
-    mount(renderHeader("chat.html", user) + `<div class="chat-wrap">
-      <div class="chat-log" id="chat-log">
-        <div class="msg assistant"><div class="role">Assistant</div>
-        <div class="bubble"><p>Ask anything about the knowledge base. Answers are grounded in your KB pages and cite the sources they used.</p>
-        <p class="muted">e.g. "What is the claim escalation ladder?" · "Summarize the composition theorem reformulation." · "Which papers cover stellar contamination?"</p></div></div>
-      </div>
-      <div class="chat-input">
-        <textarea id="q" placeholder="Ask the knowledge base… (Enter to send, Shift+Enter for newline)"></textarea>
-        <div class="controls">
-          <select id="model" title="Model">${opts}</select>
-          <button class="primary" id="send">Send</button>
+    mount(renderHeader("chat.html", user) + `<div class="chat-shell">
+      <aside class="thread-pane">
+        <button class="primary new-thread" id="new-thread">+ New thread</button>
+        <div id="thread-list"></div>
+      </aside>
+      <div class="chat-main">
+        <div class="thread-head">
+          <input id="th-title" class="th-title" placeholder="Untitled thread" autocomplete="off">
+          <input id="th-group" class="th-group" list="th-group-list" placeholder="group…" autocomplete="off">
+          <datalist id="th-group-list"></datalist>
+          <button id="th-delete" title="Delete thread">🗑</button>
+        </div>
+        <div class="chat-log" id="chat-log"></div>
+        <div class="chat-input">
+          <textarea id="q" placeholder="Ask the knowledge base… (Enter to send, Shift+Enter for newline)"></textarea>
+          <div class="controls">
+            <select id="model" title="Model">${opts}</select>
+            <button class="primary" id="send">Send</button>
+          </div>
         </div>
       </div>
     </div>`);
     wireSignOut();
+
+    try {
+      THREADS = await fetchThreads() || [];
+    } catch (e) { THREADS = []; }
+    cur = THREADS[0] || null;          // open most recent, or a fresh thread
+    renderSidebar(); renderHead(); await renderMessages();
+
+    document.getElementById("new-thread").addEventListener("click", newThread);
+    document.getElementById("thread-list").addEventListener("click", e => {
+      const it = e.target.closest(".thread-item"); if (it) selectThread(it.dataset.id);
+    });
     document.getElementById("send").addEventListener("click", send);
     document.getElementById("q").addEventListener("keydown", e => {
       if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    document.getElementById("th-title").addEventListener("change", async e => {
+      if (!cur) return; const v = e.target.value.trim() || "Untitled";
+      await patchThread(cur.id, { title: v }); cur.title = v; renderSidebar();
+    });
+    document.getElementById("th-group").addEventListener("change", async e => {
+      if (!cur) return; const v = e.target.value.trim() || null;
+      await patchThread(cur.id, { grp: v }); cur.grp = v; renderSidebar(); renderHead();
+    });
+    document.getElementById("th-delete").addEventListener("click", async () => {
+      if (!cur || !confirm("Delete this thread and its messages?")) return;
+      await deleteThreadRow(cur.id);
+      THREADS = THREADS.filter(t => t.id !== cur.id);
+      cur = THREADS[0] || null;
+      renderSidebar(); renderHead(); await renderMessages();
     });
     document.getElementById("q").focus();
   }});
