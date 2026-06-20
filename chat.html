@@ -16,6 +16,14 @@
 <script src="assets/md.js"></script>
 <script>
 let THREADS = [], cur = null;   // cur = current thread row, or null for a new (unsaved) thread
+let noteCtx = null;             // notes handed over from the Notes page, attached to the next question
+
+function clearCtx() {
+  noteCtx = null;
+  sessionStorage.removeItem("kb_chat_context");
+  sessionStorage.removeItem("kb_chat_context_n");
+  const c = document.getElementById("ctx-chip"); if (c) c.remove();
+}
 
 // ---- data ----
 const fetchThreads = () => kbFetch("kb_chat_threads?select=id,title,grp,created_at,updated_at&order=updated_at.desc");
@@ -121,9 +129,13 @@ async function send() {
       THREADS.unshift(cur); renderSidebar(); renderHead();
       document.getElementById("chat-log").innerHTML = "";
     }
-    appendMsg("user", esc(question));
+    appendMsg("user", esc(question) + (noteCtx ? ' <span class="muted">📎 with notes</span>' : ""));
     const thinking = appendMsg("assistant", `<span class="muted">Thinking…</span>`);
-    const out = await kbChat(question, sel.value, cur.id);
+    const sent = noteCtx
+      ? `Use these notes from my bibliography as context for the question that follows.\n\n${noteCtx}\n\n---\n\nQuestion: ${question}`
+      : question;
+    if (noteCtx) clearCtx();                       // one-shot: consumed by this question
+    const out = await kbChat(sent, sel.value, cur.id);
     thinking.querySelector(".bubble").innerHTML = renderMarkdown(out.answer || "(no answer)", {});
     if (out.citations && out.citations.length) {
       thinking.insertAdjacentHTML("beforeend",
@@ -166,6 +178,22 @@ async function send() {
       </div>
     </div>`);
     wireSignOut();
+
+    // Notes handed over from the Notes page → show a chip and attach to the next question.
+    const pendingCtx = sessionStorage.getItem("kb_chat_context");
+    if (pendingCtx) {
+      noteCtx = pendingCtx;
+      const n = sessionStorage.getItem("kb_chat_context_n") || "";
+      const bar = document.createElement("div");
+      bar.id = "ctx-chip";
+      bar.style.cssText = "display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 10px;border:1px solid hsl(265 45% 45%);background:hsl(265 35% 16%);border-radius:8px;font-size:13px;";
+      bar.innerHTML = `📎 <span>${esc(n)} note(s) attached as context for your next question</span>
+        <button id="ctx-clear" title="remove" style="margin-left:auto;background:none;border:none;color:inherit;cursor:pointer;font-size:15px;line-height:1;">×</button>`;
+      const ci = document.querySelector(".chat-input");
+      if (ci) ci.insertBefore(bar, ci.firstChild);
+      const cb = document.getElementById("ctx-clear");
+      if (cb) cb.addEventListener("click", clearCtx);
+    }
 
     try {
       THREADS = await fetchThreads() || [];

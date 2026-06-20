@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kb-cockpit — Notes</title>
+<link rel="stylesheet" href="assets/styles.css">
+<style>
+  .notes-toolbar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:10px 0 14px; }
+  .notes-toolbar .search { flex:1; min-width:200px; }
+  .note-card { border:1px solid var(--border,#2a2a33); border-left-width:4px; border-radius:10px;
+               padding:11px 14px; margin:10px 0; }
+  .note-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:7px; }
+  .note-title { font-weight:600; }
+  .note-key { font-size:12px; opacity:.75; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .note-corpus { font-size:10.5px; padding:1px 7px; border-radius:10px; border:1px solid currentColor; opacity:.9; text-transform:uppercase; letter-spacing:.04em; }
+  .note-date { margin-left:auto; font-size:12px; color:var(--muted,#9a96a8); white-space:nowrap; }
+  .note-body { white-space:pre-wrap; line-height:1.55; font-size:14px; }
+  .note-sel { margin-right:2px; cursor:pointer; }
+  .note-empty { opacity:.6; font-style:italic; padding:14px 2px; }
+</style>
+</head>
+<body>
+<div id="app"><p class="spinner">Loading…</p></div>
+<script src="config.js"></script>
+<script src="assets/vendor/supabase.min.js"></script>
+<script src="assets/auth.js"></script>
+<script src="assets/app.js"></script>
+<script>
+let NOTES = [], META = {}, filter = "", selected = new Set();
+
+// deterministic per-paper hue, so each paper's note keeps a stable subtle color
+function hashHue(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return h; }
+const titleOf = k => (META[k] && META[k].title) || k;
+const corpusOf = k => (META[k] && META[k].corpus) || "—";
+const dateOf = iso => iso ? `${iso.slice(0, 10)} · ${timeAgo(iso)}` : "";
+
+function visible() {
+  const q = filter.trim().toLowerCase();
+  let rows = NOTES.filter(n => (n.body || "").trim());
+  if (q) rows = rows.filter(n => [n.citation_key, titleOf(n.citation_key), n.body]
+    .some(v => (v || "").toLowerCase().includes(q)));
+  return rows;                                   // already updated_at desc from the query
+}
+
+function render() {
+  const rows = visible();
+  document.getElementById("notes").innerHTML = rows.map(n => {
+    const k = n.citation_key, h = hashHue(k);
+    return `<div class="note-card" style="border-left-color:hsl(${h} 55% 52%);background:hsl(${h} 26% 12%)">
+      <div class="note-head">
+        <input type="checkbox" class="note-sel" data-k="${esc(k)}" ${selected.has(k) ? "checked" : ""}>
+        <span class="note-title">${esc(titleOf(k))}</span>
+        <span class="note-key">${esc(k)}</span>
+        <span class="note-corpus" style="color:hsl(${h} 60% 72%)">${esc(corpusOf(k))}</span>
+        <span class="note-date">${esc(dateOf(n.updated_at))}</span>
+      </div>
+      <div class="note-body">${esc(n.body)}</div>
+    </div>`;
+  }).join("") || `<p class="note-empty">${filter ? "No notes match." : "No notes yet — add them from the Bibliography reader panel."}</p>`;
+  document.getElementById("count").textContent = rows.length;
+  document.getElementById("selcount").textContent = selected.size;
+  document.getElementById("use-chat").disabled = selected.size === 0;
+  document.getElementById("copy-sel").disabled = selected.size === 0;
+}
+
+// formatted context block from the selected notes (newest first)
+function buildContext() {
+  return NOTES.filter(n => selected.has(n.citation_key) && (n.body || "").trim())
+    .map(n => `## ${titleOf(n.citation_key)} (${n.citation_key}${n.updated_at ? ", " + n.updated_at.slice(0, 10) : ""})\n${n.body.trim()}`)
+    .join("\n\n");
+}
+
+(async function () {
+  await window.kbAuth.requireOwner({ onReady: async (user) => {
+    try {
+      NOTES = await kbFetch("xo_ref_notes?select=citation_key,body,updated_at&order=updated_at.desc") || [];
+      const keys = [...new Set(NOTES.map(n => n.citation_key))];
+      if (keys.length) {
+        const inlist = keys.map(k => `"${String(k).replace(/"/g, "")}"`).join(",");
+        const meta = await kbFetch(`kb_library?select=ref_id,corpus,title,year&ref_id=in.(${encodeURIComponent(inlist)})`) || [];
+        meta.forEach(r => { META[r.ref_id] = r; });
+      }
+
+      mount(renderHeader("notes.html", user) + `<main>
+        <h2 class="section-title">Notes <span class="muted">(<span id="count">0</span> · one card per paper, newest first)</span></h2>
+        <div class="notes-toolbar">
+          <input class="search" id="search" type="search" placeholder="Search notes, paper title, key…" autocomplete="off">
+          <button class="link-btn" id="select-all">Select all shown</button>
+          <button id="copy-sel" disabled>Copy selected</button>
+          <button class="primary" id="use-chat" disabled>📎 Use in chat (<span id="selcount">0</span>)</button>
+        </div>
+        <div id="notes"></div>
+      </main>` + renderFooter());
+      wireSignOut();
+      render();
+
+      document.getElementById("search").addEventListener("input", e => { filter = e.target.value; render(); });
+      document.getElementById("notes").addEventListener("change", e => {
+        const cb = e.target.closest(".note-sel");
+        if (cb) { const k = cb.dataset.k; cb.checked ? selected.add(k) : selected.delete(k); render(); }
+      });
+      document.getElementById("select-all").addEventListener("click", () => {
+        const rows = visible();
+        const allSel = rows.every(n => selected.has(n.citation_key));
+        rows.forEach(n => allSel ? selected.delete(n.citation_key) : selected.add(n.citation_key));
+        render();
+      });
+      document.getElementById("copy-sel").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(buildContext()); } catch (e) { /* ignore */ }
+      });
+      document.getElementById("use-chat").addEventListener("click", () => {
+        const ctx = buildContext();
+        if (!ctx) return;
+        sessionStorage.setItem("kb_chat_context", ctx);
+        sessionStorage.setItem("kb_chat_context_n", String(selected.size));
+        location.href = "chat.html";
+      });
+    } catch (err) {
+      mount(renderHeader("notes.html", user) + `<main>${errorNotice(err)}</main>` + renderFooter());
+      wireSignOut();
+    }
+  }});
+})();
+</script>
+</body>
+</html>

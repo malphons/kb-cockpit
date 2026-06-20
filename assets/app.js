@@ -118,6 +118,7 @@ function renderHeader(active, user) {
       ${link("navigator.html", "Navigator")}
       ${link("chat.html", "Chat")}
       ${link("bibliography.html", "Bibliography")}
+      ${link("notes.html", "Notes")}
       ${who}
       <button id="kb-signout-btn">Sign out</button>
     </nav>
