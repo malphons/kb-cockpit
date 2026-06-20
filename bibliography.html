@@ -5,17 +5,46 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>kb-cockpit — Bibliography</title>
 <link rel="stylesheet" href="assets/styles.css">
+<style>
+  .rp-pdf .pdfhl-host { height:100%; min-height:0; }
+  .pdfhl-root { overflow:auto; height:100%; background:#2b2b30; }
+  .pdfhl-page { position:relative; margin:8px auto; background:#fff; box-shadow:0 1px 6px rgba(0,0,0,.4); }
+  .pdfhl-page canvas { display:block; }
+  .pdfhl-textlayer { position:absolute; inset:0; overflow:hidden; line-height:1; }
+  .pdfhl-textlayer span { color:transparent; position:absolute; white-space:pre; transform-origin:0 0; }
+  .pdfhl-textlayer ::selection { background:rgba(90,130,255,.35); }
+  .pdfhl-hl-layer { position:absolute; inset:0; pointer-events:none; }
+  .pdfhl-hl { position:absolute; background:rgba(255,212,0,.32); border-radius:2px; pointer-events:auto; cursor:pointer; mix-blend-mode:multiply; }
+  .pdfhl-hl:hover { background:rgba(255,180,0,.55); }
+  .pdfhl-loading { padding:18px; color:#bbb; }
+  .hl-list { display:flex; flex-direction:column; gap:3px; }
+  .hl-item { display:flex; gap:8px; align-items:baseline; padding:3px 6px; border-radius:6px; cursor:pointer; font-size:12.5px; }
+  .hl-item:hover { background:rgba(255,255,255,.06); }
+  .hl-tag { font-weight:600; font-family:ui-monospace,monospace; }
+  .hl-pg { color:var(--muted,#9a96a8); font-size:11px; }
+  .hl-q { color:var(--muted,#9a96a8); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hl-pop { position:fixed; z-index:50; width:300px; background:#1c1c22; border:1px solid #3a3a44; border-radius:10px; padding:10px; box-shadow:0 6px 24px rgba(0,0,0,.5); }
+  .hl-pop.hidden { display:none; }
+  .hl-pop-row { display:flex; gap:8px; align-items:center; margin-bottom:6px; }
+  .hl-pop-row input { flex:1; }
+  .hl-pop-quote { font-size:12px; color:var(--muted,#9a96a8); max-height:54px; overflow:auto; border-left:2px solid #555; padding-left:7px; margin-bottom:6px; white-space:pre-wrap; }
+  .hl-pop textarea { width:100%; min-height:60px; }
+  .hl-pop-actions { display:flex; gap:8px; align-items:center; margin-top:7px; }
+  .hl-pop .danger { color:#f5709a; }
+</style>
 </head>
 <body>
 <div id="app"><p class="spinner">Loading…</p></div>
 <script src="config.js"></script>
 <script src="assets/vendor/supabase.min.js"></script>
 <script src="assets/auth.js"></script>
+<script src="assets/pdfhl.js"></script>
 <script src="assets/app.js"></script>
 <script>
 let REFS = [], NOTES = {}, OBJECTS = [], filter = "", statusF = "", chapterF = "", notesOnly = false,
     tagFilter = new Set(), sortKey = "reading_priority", sortDir = -1, openKey = null,
     scopeF = "curated", archiveLoaded = false;
+let HLS = [], pdfCtl = null, hlEditing = null;    // current paper's PDF highlights
 const STATUS_LABEL = { Q: "queued", S: "skimmed", R: "read", N: "read+notes", C: "cited" };
 // kb_library unifies the curated bibliography (kb_bib) and the arXiv archive (kb_archive).
 // ref_id = citation_key for curated, arxiv_id for archive; bucket tells us where the PDF lives.
@@ -150,13 +179,27 @@ async function openReader(key) {
   setRpStatus(NOTES[key] ? "loaded" : "", "");
   panel.classList.remove("hidden");
 
+  HLS = []; pdfCtl = null;
+  document.getElementById("rp-hl-field").style.display = r.pdf_object ? "" : "none";
+  renderHlList();
+
   const pane = panel.querySelector(".rp-pdf");
   pane.innerHTML = '<div class="placeholder">Loading…</div>';
   if (r.pdf_object) {
     try {
       const { data, error } = await window.kbAuth.sb.storage.from(r.bucket || "kb-pdfs").createSignedUrl(r.pdf_object, 3600);
       if (error || !data?.signedUrl) throw new Error(error?.message || "no signed URL");
-      if (openKey === key) pane.innerHTML = `<iframe src="${esc(data.signedUrl)}#view=FitH" title="PDF"></iframe>`;
+      if (openKey !== key) return;
+      HLS = await kbFetch(`kb_highlights?ref_id=eq.${encodeURIComponent(r.ref_id)}&select=id,tag,page,rects,quote,body,color&order=page`) || [];
+      pane.innerHTML = '<div class="pdfhl-host" id="pdfhost"></div>';
+      pdfCtl = await PDFHL.open({
+        container: document.getElementById("pdfhost"),
+        url: data.signedUrl,
+        highlights: HLS,
+        onSelect: pending => openHlForm(r.ref_id, pending, null),
+        onOpen: hl => openHlForm(r.ref_id, null, hl)
+      });
+      renderHlList();
     } catch (e) {
       pane.innerHTML = `<div class="placeholder"><div>Couldn't load PDF.<br><span class="muted">${esc(e.message)}</span></div></div>`;
     }
@@ -188,12 +231,105 @@ function renderReaderMeta(r) {
 
 function closeReader() {
   openKey = null;
+  pdfCtl = null; HLS = [];
+  closeHlForm();
   document.getElementById("reader-panel").classList.add("hidden");
   document.querySelector(".rp-pdf").innerHTML = "";
 }
 function setRpStatus(text, cls) {
   const s = document.getElementById("rp-status");
   if (s) { s.className = "note-status " + (cls || ""); s.textContent = text; }
+}
+
+// ---- PDF highlights ----
+function renderHlList() {
+  const box = document.getElementById("rp-hl-list");
+  if (!box) return;
+  if (!HLS.length) { box.innerHTML = '<span class="muted">none yet</span>'; return; }
+  box.innerHTML = HLS.slice().sort((a, b) => (a.page - b.page)).map(h => {
+    const hue = hashHue(h.tag || h.id);
+    return `<div class="hl-item" data-id="${esc(h.id)}">
+      <span class="hl-tag" style="color:hsl(${hue} 70% 72%)">${esc(h.tag || "p." + h.page)}</span>
+      <span class="hl-pg">p.${h.page}</span>
+      <span class="hl-q">${esc((h.quote || h.body || "").slice(0, 70))}</span>
+    </div>`;
+  }).join("");
+}
+
+function hlPopover() {
+  let p = document.getElementById("hl-pop");
+  if (p) return p;
+  p = document.createElement("div");
+  p.id = "hl-pop";
+  p.className = "hl-pop hidden";
+  p.innerHTML = `
+    <div class="hl-pop-row"><input id="hl-tag" placeholder="tag (e.g. eq-4, methods)" autocomplete="off"><span id="hl-pg" class="muted"></span></div>
+    <div id="hl-quote" class="hl-pop-quote"></div>
+    <textarea id="hl-body" placeholder="note for this passage…"></textarea>
+    <div class="hl-pop-actions">
+      <button class="primary" id="hl-save">Save</button>
+      <button id="hl-del" class="danger" style="display:none">Delete</button>
+      <button id="hl-cancel">Cancel</button>
+      <span class="note-status" id="hl-status"></span>
+    </div>`;
+  document.body.appendChild(p);
+  p.querySelector("#hl-save").addEventListener("click", saveHl);
+  p.querySelector("#hl-del").addEventListener("click", deleteHl);
+  p.querySelector("#hl-cancel").addEventListener("click", closeHlForm);
+  return p;
+}
+function setHlStatus(t, c) { const s = document.getElementById("hl-status"); if (s) { s.className = "note-status " + (c || ""); s.textContent = t; } }
+function closeHlForm() { const p = document.getElementById("hl-pop"); if (p) p.classList.add("hidden"); hlEditing = null; if (pdfCtl) pdfCtl.clearSelection(); }
+
+function openHlForm(refId, pending, existing) {
+  const pop = hlPopover();
+  hlEditing = { refId, pending, existing };
+  const page = existing ? existing.page : pending.page;
+  pop.querySelector("#hl-tag").value = existing ? (existing.tag || "") : "";
+  pop.querySelector("#hl-body").value = existing ? (existing.body || "") : "";
+  pop.querySelector("#hl-quote").textContent = (existing ? existing.quote : pending.quote) || "";
+  pop.querySelector("#hl-pg").textContent = "p." + page;
+  pop.querySelector("#hl-del").style.display = existing ? "" : "none";
+  setHlStatus("", "");
+  const a = pending && pending.anchor;
+  pop.style.left = Math.max(8, Math.min(window.innerWidth - 316, a ? a.x : window.innerWidth / 2)) + "px";
+  pop.style.top = Math.max(8, Math.min(window.innerHeight - 230, a ? a.y + 8 : 120)) + "px";
+  pop.classList.remove("hidden");
+  pop.querySelector("#hl-body").focus();
+}
+
+async function saveHl() {
+  if (!hlEditing) return;
+  const { refId, pending, existing } = hlEditing;
+  const tag = (document.getElementById("hl-tag").value || "").trim() || null;
+  const body = document.getElementById("hl-body").value;
+  setHlStatus("Saving…", "saving");
+  try {
+    if (existing) {
+      await kbFetch(`kb_highlights?id=eq.${existing.id}`, { method: "PATCH", prefer: "return=minimal", body: { tag, body } });
+      Object.assign(existing, { tag, body });
+      if (pdfCtl) pdfCtl.render(existing);
+    } else {
+      const rows = await kbFetch("kb_highlights", { method: "POST", prefer: "return=representation",
+        body: { ref_id: refId, tag, page: pending.page, rects: pending.rects, quote: pending.quote, body } });
+      const saved = rows && rows[0];
+      if (saved) { HLS.push(saved); if (pdfCtl) pdfCtl.render(saved); }
+    }
+    renderHlList();
+    closeHlForm();
+  } catch (e) { setHlStatus(e.message, "error"); }
+}
+
+async function deleteHl() {
+  if (!hlEditing || !hlEditing.existing) return;
+  const id = hlEditing.existing.id;
+  try {
+    await kbFetch(`kb_highlights?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal" });
+    HLS = HLS.filter(h => h.id !== id);
+    if (pdfCtl) pdfCtl.remove(id);
+    renderHlList();
+    closeHlForm();
+  } catch (e) { setHlStatus(e.message, "error"); }
 }
 
 // Route an edit to the right base table (curated -> kb_bib, archive -> kb_archive).
@@ -335,6 +471,10 @@ async function loadObjects() {
               <button class="primary" id="rp-promote">⭐ Promote to curated</button>
               <span class="muted">adds this archive paper to your curated bibliography</span>
             </div>
+            <div class="rp-field" id="rp-hl-field" style="display:none">
+              <label class="rp-lbl">Highlights <span class="muted">— select text in the PDF to add a tagged note</span></label>
+              <div id="rp-hl-list" class="hl-list"></div>
+            </div>
             <div class="rp-field">
               <label class="rp-lbl">Reading priority (0–100)</label>
               <input type="number" id="rp-pri" min="0" max="100" step="1" class="rp-pri-input">
@@ -393,6 +533,11 @@ async function loadObjects() {
       document.getElementById("rp-close").addEventListener("click", closeReader);
       document.getElementById("rp-save").addEventListener("click", () => openKey && saveNote(openKey));
       document.getElementById("rp-promote").addEventListener("click", () => openKey && promote(openKey));
+      document.getElementById("rp-hl-list").addEventListener("click", e => {
+        const it = e.target.closest(".hl-item"); if (!it) return;
+        const hl = HLS.find(h => h.id === it.dataset.id);
+        if (hl) { if (pdfCtl) pdfCtl.scrollTo(hl.page); const r = refByKey(openKey); openHlForm(r && r.ref_id, null, hl); }
+      });
       document.getElementById("rp-note").addEventListener("blur", () => {
         if (openKey && document.getElementById("rp-note").value !== (NOTES[openKey] || "")) saveNote(openKey);
       });

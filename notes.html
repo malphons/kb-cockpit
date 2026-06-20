@@ -13,8 +13,10 @@
   .note-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:7px; }
   .note-title { font-weight:600; }
   .note-key { font-size:12px; opacity:.75; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
-  .note-corpus { font-size:10.5px; padding:1px 7px; border-radius:10px; border:1px solid currentColor; opacity:.9; text-transform:uppercase; letter-spacing:.04em; }
+  .note-kind { font-size:10px; padding:1px 6px; border-radius:9px; border:1px solid currentColor; opacity:.9; text-transform:uppercase; letter-spacing:.04em; }
+  .note-corpus { font-size:10.5px; opacity:.7; }
   .note-date { margin-left:auto; font-size:12px; color:var(--muted,#9a96a8); white-space:nowrap; }
+  .note-quote { border-left:2px solid #666; padding:2px 0 2px 9px; margin:0 0 6px; font-size:13px; color:var(--muted,#b9b6c8); font-style:italic; white-space:pre-wrap; }
   .note-body { white-space:pre-wrap; line-height:1.55; font-size:14px; }
   .note-sel { margin-right:2px; cursor:pointer; }
   .note-empty { opacity:.6; font-style:italic; padding:14px 2px; }
@@ -27,55 +29,76 @@
 <script src="assets/auth.js"></script>
 <script src="assets/app.js"></script>
 <script>
-let NOTES = [], META = {}, filter = "", selected = new Set();
+let ITEMS = [], META = {}, filter = "", selected = new Set();
 
-// deterministic per-paper hue, so each paper's note keeps a stable subtle color
 function hashHue(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return h; }
 const titleOf = k => (META[k] && META[k].title) || k;
-const corpusOf = k => (META[k] && META[k].corpus) || "—";
+const corpusOf = k => (META[k] && META[k].corpus) || "";
 const dateOf = iso => iso ? `${iso.slice(0, 10)} · ${timeAgo(iso)}` : "";
 
 function visible() {
   const q = filter.trim().toLowerCase();
-  let rows = NOTES.filter(n => (n.body || "").trim());
-  if (q) rows = rows.filter(n => [n.citation_key, titleOf(n.citation_key), n.body]
+  let rows = ITEMS;
+  if (q) rows = rows.filter(it => [it.ref_id, it.tag, titleOf(it.ref_id), it.quote, it.body]
     .some(v => (v || "").toLowerCase().includes(q)));
-  return rows;                                   // already updated_at desc from the query
+  return rows;                                   // already date desc
 }
 
 function render() {
   const rows = visible();
-  document.getElementById("notes").innerHTML = rows.map(n => {
-    const k = n.citation_key, h = hashHue(k);
+  document.getElementById("notes").innerHTML = rows.map(it => {
+    const h = hashHue(it.ref_id);
+    const isHl = it.kind === "hl";
+    const label = isHl ? `${it.tag || "p." + it.page}` : "note";
+    const quote = isHl && it.quote ? `<div class="note-quote">${esc(it.quote)}</div>` : "";
     return `<div class="note-card" style="border-left-color:hsl(${h} 55% 52%);background:hsl(${h} 26% 12%)">
       <div class="note-head">
-        <input type="checkbox" class="note-sel" data-k="${esc(k)}" ${selected.has(k) ? "checked" : ""}>
-        <span class="note-title">${esc(titleOf(k))}</span>
-        <span class="note-key">${esc(k)}</span>
-        <span class="note-corpus" style="color:hsl(${h} 60% 72%)">${esc(corpusOf(k))}</span>
-        <span class="note-date">${esc(dateOf(n.updated_at))}</span>
+        <input type="checkbox" class="note-sel" data-id="${esc(it.id)}" ${selected.has(it.id) ? "checked" : ""}>
+        <span class="note-title">${esc(titleOf(it.ref_id))}</span>
+        <span class="note-key">${esc(it.ref_id)}</span>
+        <span class="note-kind" style="color:hsl(${h} 60% 72%)">${esc(isHl ? "🔖 " + label + (isHl ? " · p." + it.page : "") : "note")}</span>
+        <span class="note-corpus">${esc(corpusOf(it.ref_id))}</span>
+        <span class="note-date">${esc(dateOf(it.updated_at))}</span>
       </div>
-      <div class="note-body">${esc(n.body)}</div>
+      ${quote}
+      <div class="note-body">${esc(it.body || "")}</div>
     </div>`;
-  }).join("") || `<p class="note-empty">${filter ? "No notes match." : "No notes yet — add them from the Bibliography reader panel."}</p>`;
+  }).join("") || `<p class="note-empty">${filter ? "No notes match." : "No notes yet — add them from the Bibliography reader (paper notes or PDF highlights)."}</p>`;
   document.getElementById("count").textContent = rows.length;
   document.getElementById("selcount").textContent = selected.size;
   document.getElementById("use-chat").disabled = selected.size === 0;
   document.getElementById("copy-sel").disabled = selected.size === 0;
 }
 
-// formatted context block from the selected notes (newest first)
 function buildContext() {
-  return NOTES.filter(n => selected.has(n.citation_key) && (n.body || "").trim())
-    .map(n => `## ${titleOf(n.citation_key)} (${n.citation_key}${n.updated_at ? ", " + n.updated_at.slice(0, 10) : ""})\n${n.body.trim()}`)
-    .join("\n\n");
+  return ITEMS.filter(it => selected.has(it.id) && ((it.body || "").trim() || (it.quote || "").trim()))
+    .map(it => {
+      const head = it.kind === "hl"
+        ? `## ${titleOf(it.ref_id)} — ${it.tag || "p." + it.page} (${it.ref_id}, p.${it.page})`
+        : `## ${titleOf(it.ref_id)} (${it.ref_id})`;
+      const quote = it.kind === "hl" && it.quote ? `> ${it.quote.replace(/\n/g, "\n> ")}\n` : "";
+      return `${head}\n${quote}${(it.body || "").trim()}`.trim();
+    }).join("\n\n");
 }
 
 (async function () {
   await window.kbAuth.requireOwner({ onReady: async (user) => {
     try {
-      NOTES = await kbFetch("xo_ref_notes?select=citation_key,body,updated_at&order=updated_at.desc") || [];
-      const keys = [...new Set(NOTES.map(n => n.citation_key))];
+      const [notes, hls] = await Promise.all([
+        kbFetch("xo_ref_notes?select=citation_key,body,updated_at&order=updated_at.desc"),
+        kbFetch("kb_highlights?select=id,ref_id,tag,page,quote,body,updated_at&order=updated_at.desc")
+      ]);
+      ITEMS = [];
+      (notes || []).forEach(n => {
+        if ((n.body || "").trim())
+          ITEMS.push({ kind: "note", id: "note:" + n.citation_key, ref_id: n.citation_key, body: n.body, updated_at: n.updated_at });
+      });
+      (hls || []).forEach(h => {
+        ITEMS.push({ kind: "hl", id: "hl:" + h.id, ref_id: h.ref_id, tag: h.tag, page: h.page, quote: h.quote, body: h.body, updated_at: h.updated_at });
+      });
+      ITEMS.sort((a, b) => (b.updated_at || "").localeCompare(a.updated_at || ""));
+
+      const keys = [...new Set(ITEMS.map(it => it.ref_id))];
       if (keys.length) {
         const inlist = keys.map(k => `"${String(k).replace(/"/g, "")}"`).join(",");
         const meta = await kbFetch(`kb_library?select=ref_id,corpus,title,year&ref_id=in.(${encodeURIComponent(inlist)})`) || [];
@@ -83,9 +106,9 @@ function buildContext() {
       }
 
       mount(renderHeader("notes.html", user) + `<main>
-        <h2 class="section-title">Notes <span class="muted">(<span id="count">0</span> · one card per paper, newest first)</span></h2>
+        <h2 class="section-title">Notes <span class="muted">(<span id="count">0</span> · paper notes + PDF highlights, newest first)</span></h2>
         <div class="notes-toolbar">
-          <input class="search" id="search" type="search" placeholder="Search notes, paper title, key…" autocomplete="off">
+          <input class="search" id="search" type="search" placeholder="Search notes, highlights, tag, paper…" autocomplete="off">
           <button class="link-btn" id="select-all">Select all shown</button>
           <button id="copy-sel" disabled>Copy selected</button>
           <button class="primary" id="use-chat" disabled>📎 Use in chat (<span id="selcount">0</span>)</button>
@@ -98,12 +121,12 @@ function buildContext() {
       document.getElementById("search").addEventListener("input", e => { filter = e.target.value; render(); });
       document.getElementById("notes").addEventListener("change", e => {
         const cb = e.target.closest(".note-sel");
-        if (cb) { const k = cb.dataset.k; cb.checked ? selected.add(k) : selected.delete(k); render(); }
+        if (cb) { const id = cb.dataset.id; cb.checked ? selected.add(id) : selected.delete(id); render(); }
       });
       document.getElementById("select-all").addEventListener("click", () => {
         const rows = visible();
-        const allSel = rows.every(n => selected.has(n.citation_key));
-        rows.forEach(n => allSel ? selected.delete(n.citation_key) : selected.add(n.citation_key));
+        const allSel = rows.every(it => selected.has(it.id));
+        rows.forEach(it => allSel ? selected.delete(it.id) : selected.add(it.id));
         render();
       });
       document.getElementById("copy-sel").addEventListener("click", async () => {

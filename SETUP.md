@@ -45,6 +45,8 @@ Supabase dashboards). The site code is already built; the anon key is already in
       `kb_library` view the Bibliography page reads (curated + archive)
    7. `kb_promote.sql` — promote_to_curated() RPC + pdf_bucket/promoted_to
       (the Bibliography "Promote to curated" button)
+   8. `kb_highlights.sql` — anchored, tagged PDF highlights (the Bibliography
+      PDF.js viewer; aggregated on the Notes page)
 
    For the archive's larger PDFs, also raise the project upload limit:
    **Project Settings → Storage → "Upload file size limit" → 100 MB**.
