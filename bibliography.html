@@ -17,6 +17,11 @@
   .pdfhl-hl { position:absolute; background:rgba(255,212,0,.32); border-radius:2px; pointer-events:auto; cursor:pointer; mix-blend-mode:multiply; }
   .pdfhl-hl:hover { background:rgba(255,180,0,.55); }
   .pdfhl-loading { padding:18px; color:#bbb; }
+  .rp-pdf { position:relative; }
+  .pdf-zoombar { position:absolute; top:8px; right:14px; z-index:6; display:flex; gap:4px; align-items:center;
+    background:rgba(28,28,34,.92); border:1px solid #3a3a44; border-radius:8px; padding:3px 6px; font-size:13px; }
+  .pdf-zoombar button { width:26px; height:24px; line-height:1; cursor:pointer; }
+  .pdf-zoombar #z-pct { min-width:42px; text-align:center; color:var(--muted,#9a96a8); }
   .hl-list { display:flex; flex-direction:column; gap:3px; }
   .hl-item { display:flex; gap:8px; align-items:baseline; padding:3px 6px; border-radius:6px; cursor:pointer; font-size:12.5px; }
   .hl-item:hover { background:rgba(255,255,255,.06); }
@@ -191,7 +196,10 @@ async function openReader(key) {
       if (error || !data?.signedUrl) throw new Error(error?.message || "no signed URL");
       if (openKey !== key) return;
       HLS = await kbFetch(`kb_highlights?ref_id=eq.${encodeURIComponent(r.ref_id)}&select=id,tag,page,rects,quote,body,color&order=page`) || [];
-      pane.innerHTML = '<div class="pdfhl-host" id="pdfhost"></div>';
+      pane.innerHTML = `<div class="pdf-zoombar">
+        <button id="z-out" title="Zoom out">−</button><span id="z-pct">100%</span>
+        <button id="z-in" title="Zoom in">+</button><button id="z-reset" title="Fit width">⤢</button>
+      </div><div class="pdfhl-host" id="pdfhost"></div>`;
       pdfCtl = await PDFHL.open({
         container: document.getElementById("pdfhost"),
         url: data.signedUrl,
@@ -199,6 +207,11 @@ async function openReader(key) {
         onSelect: pending => openHlForm(r.ref_id, pending, null),
         onOpen: hl => openHlForm(r.ref_id, null, hl)
       });
+      const zpct = () => { const e = document.getElementById("z-pct"); if (e && pdfCtl) e.textContent = Math.round(pdfCtl.getScale() * 100) + "%"; };
+      document.getElementById("z-in").addEventListener("click", async () => { await pdfCtl.zoom(1.25); zpct(); });
+      document.getElementById("z-out").addEventListener("click", async () => { await pdfCtl.zoom(0.8); zpct(); });
+      document.getElementById("z-reset").addEventListener("click", async () => { await pdfCtl.setScale(1); zpct(); });
+      zpct();
       renderHlList();
     } catch (e) {
       pane.innerHTML = `<div class="placeholder"><div>Couldn't load PDF.<br><span class="muted">${esc(e.message)}</span></div></div>`;
