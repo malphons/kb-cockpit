@@ -117,6 +117,7 @@ function renderHeader(active, user) {
     <nav>
       ${link("navigator.html", "Navigator")}
       ${link("showcase.html", "Showcase")}
+      ${link("table.html", "Table")}
       ${link("chat.html", "Chat")}
       ${link("bibliography.html", "Bibliography")}
       ${link("notes.html", "Notes")}

@@ -9,10 +9,12 @@
 import * as THREE from "three";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 import { deriveAll, C } from "./exo.js";
+import { fetchAnnotations, fetchDbConfidence, openAnnotationEditor, userConfDot, dbConfBadge, renderLinks } from "./annotations.js";
 
 let LIST = [];                 // lightweight planet rows for the selector
 let CURRENT = null;            // selected planet_id
 let viz = null;               // the three.js controller
+let CUR = null;                // { p, s, d, annot:{list,byParam}, dbConf } for the selected planet
 
 // ---- small utilities --------------------------------------------------------
 function hash(str) { let h = 2166136261; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
@@ -149,38 +151,60 @@ function renderList() {
 }
 
 // ---- HUD --------------------------------------------------------------------
-function renderHud(p, s, d) {
-  const star = s || {};
+// inner value HTML for a derived record (no wrapping span)
+function valHtml(rec) {
+  if (!rec || rec.value == null) return "—";
+  const u = rec.unit ? `<span class="sc-u">${esc(rec.unit)}</span>` : "";
+  const t = fmtNum(rec.value);
+  return rec.derived ? `<span class="sc-d" title="derived — ${esc(rec.note || "computed")}">≈${t}</span>${u}` : `${t}${u}`;
+}
+// A taggable HUD row: value + DB confidence badge + your-confidence dot + links + tag button.
+// key = stable annotation parameter; dbParam = matching xo_canonical_facts parameter (optional).
+function tag(key, label, inner, dbParam) {
+  const a = CUR && CUR.annot.byParam[key];
+  const dbc = dbParam && CUR && CUR.dbConf[dbParam];
+  const badge = dbc ? dbConfBadge(dbc.confidence_class) : "";
+  const dot = a && a.confidence ? userConfDot(a.confidence) : "";
+  const links = (a && a.links && a.links.length) ? `<div class="sc-links">${renderLinks(a.links)}</div>` : "";
+  return `<div class="sc-row${a ? " has-anno" : ""}"><span class="k">${label}</span><span class="v">${inner}${badge}${dot}` +
+    ` <button class="an-tag-btn" data-key="${esc(key)}" data-label="${esc(label)}" title="Tag / note / link">🏷</button></span>${links}</div>`;
+}
+
+function renderHud() {
+  const { p, s, d } = CUR; const star = s || {};
+  const planetAnno = CUR.annot.byParam[""];
+  const noteBtn = `<button class="an-tag-btn sc-notebtn" data-key="" data-label="Planet note" title="Note on this planet">📝 Note${planetAnno ? userConfDot(planetAnno.confidence) : ""}</button>`;
   document.getElementById("sc-title").innerHTML =
-    `<div class="nm">${esc(p.name || p.planet_id)}</div><div class="rg">${esc(p.regime_class || "—")}${star.name ? " · " + esc(star.name) : ""}</div>`;
+    `<div class="nm">${esc(p.name || p.planet_id)}</div><div class="rg">${esc(p.regime_class || "—")}${star.name ? " · " + esc(star.name) : ""}</div>${noteBtn}`;
 
   document.getElementById("sc-id").innerHTML = `<h4>Identity</h4>` +
-    rowRaw("Host star", esc(star.name || p.host_star_id || "—")) +
+    tag("host_star", "Host star", esc(star.name || p.host_star_id || "—")) +
     rowRaw("Spectral type", esc(star.spectral_type || "—")) +
     rowRaw("Distance", star.distance_pc != null ? `${fmtNum(star.distance_pc)}<span class="sc-u">pc</span>` : "—") +
-    rowRaw("Discovered", esc((p.discovery_year || "—") + (p.discovery_method ? " · " + p.discovery_method : ""))) +
+    tag("discovery", "Discovered", esc((p.discovery_year || "—") + (p.discovery_method ? " · " + p.discovery_method : "")), "discovery_method") +
     rowRaw("HZ position", esc(p.hz_position || "—"));
 
   document.getElementById("sc-phys").innerHTML = `<h4>Physical</h4>` +
-    rowRaw("Radius", p.radius_rearth != null ? `${fmtNum(p.radius_rearth)}<span class="sc-u">R⊕</span> · ${fmtNum(p.radius_rearth * C.R_earth / C.R_jup)}<span class="sc-u">R♃</span>` : "—") +
-    rowRaw("Mass", p.mass_mearth != null ? `${fmtNum(p.mass_mearth)}<span class="sc-u">M⊕</span>` : "—") +
-    row("Density", d.density) +
-    row("Gravity", d.gravity) +
-    row("Eq. temp", d.eqTemp) +
-    row("Insolation", d.insolation) +
-    rowRaw("Orbital period", p.orbital_period_days != null ? `${fmtNum(p.orbital_period_days)}<span class="sc-u">d</span>` : "—") +
-    row("Semi-major axis", d.semiMajorAxis);
+    tag("radius_rearth", "Radius", p.radius_rearth != null ? `${fmtNum(p.radius_rearth)}<span class="sc-u">R⊕</span>` : "—", "radius_rearth") +
+    tag("mass_mearth", "Mass", p.mass_mearth != null ? `${fmtNum(p.mass_mearth)}<span class="sc-u">M⊕</span>` : "—", "mass_mearth") +
+    tag("density_gcc", "Density", valHtml(d.density), "density_gcc") +
+    tag("gravity", "Gravity", valHtml(d.gravity)) +
+    tag("equilibrium_temp_k", "Eq. temp", valHtml(d.eqTemp), "equilibrium_temp_k") +
+    tag("insolation", "Insolation", valHtml(d.insolation)) +
+    tag("orbital_period_days", "Orbital period", p.orbital_period_days != null ? `${fmtNum(p.orbital_period_days)}<span class="sc-u">d</span>` : "—", "orbital_period_days") +
+    tag("semi_major_axis", "Semi-major axis", valHtml(d.semiMajorAxis));
 
   document.getElementById("sc-det").innerHTML = `<h4>Detectability</h4>` +
-    row("Scale height", d.scaleHeight) +
-    row("Transit depth", d.transitDepth) +
-    row("Transmission Δδ", d.transmissionSignal) +
-    row("TSM", d.tsm) +
-    row("ESM", d.esm) +
-    row("Escape vel.", d.escapeVelocity);
+    tag("scale_height", "Scale height", valHtml(d.scaleHeight)) +
+    tag("transit_depth", "Transit depth", valHtml(d.transitDepth)) +
+    tag("transmission", "Transmission Δδ", valHtml(d.transmissionSignal)) +
+    tag("tsm", "TSM", valHtml(d.tsm)) +
+    tag("esm", "ESM", valHtml(d.esm)) +
+    tag("escape_velocity", "Escape vel.", valHtml(d.escapeVelocity));
 
-  document.getElementById("sc-conf").innerHTML = `<h4>Provenance</h4>` +
-    `<div class="sc-row" style="line-height:1.4"><span class="k" style="text-align:left">NASA Exoplanet Archive values; <span class="sc-d" title="model-based">≈ marks derived metrics</span> (assumptions in tooltips).</span></div>`;
+  const note = planetAnno && planetAnno.body ? `<div class="sc-row" style="line-height:1.4"><span class="k" style="text-align:left">${esc(planetAnno.body)}</span></div>` + (planetAnno.links && planetAnno.links.length ? `<div class="sc-links">${renderLinks(planetAnno.links)}</div>` : "") : "";
+  document.getElementById("sc-conf").innerHTML = `<h4>Notes &amp; provenance</h4>` + note +
+    `<div class="sc-row" style="line-height:1.4"><span class="k" style="text-align:left">Badges = DB provenance confidence; dots = your rating. <span class="sc-d" title="model-based">≈ marks derived metrics</span>. Click 🏷 to tag any value.</span></div>`;
 }
 
 // ===========================================================================
@@ -333,9 +357,21 @@ async function select(id) {
   if (!detail) return;
   const star = detail.host || null;
   const d = deriveAll(detail, star);
+  const [annot, dbConf] = await Promise.all([fetchAnnotations(id), fetchDbConfidence(id)]);
+  CUR = { p: detail, s: star, d, annot, dbConf };
   document.getElementById("sc-empty").style.display = "none";
-  renderHud(detail, star, d);
+  renderHud();
   viz.load(detail, star, d);
+}
+
+// Open the annotation editor for whatever 🏷 / 📝 button was clicked.
+async function openTag(key, label) {
+  if (!CUR) return;
+  openAnnotationEditor({
+    entityId: CUR.p.planet_id, parameter: key, label,
+    existing: CUR.annot.byParam[key],
+    onSaved: async () => { CUR.annot = await fetchAnnotations(CUR.p.planet_id); renderHud(); }
+  });
 }
 
 // ---- boot -------------------------------------------------------------------
@@ -384,6 +420,11 @@ function ui(user) {
   document.getElementById("sc-hz").addEventListener("change", reflow);
   document.getElementById("sc-list").addEventListener("click", e => {
     const it = e.target.closest(".sc-item"); if (it) select(it.dataset.id);
+  });
+  // tag / note buttons in the HUD (delegated)
+  document.addEventListener("click", e => {
+    const b = e.target.closest(".an-tag-btn"); if (!b) return;
+    openTag(b.dataset.key || "", b.dataset.label || "Planet note");
   });
   document.getElementById("sc-v-planet").addEventListener("click", () => {
     viz.setView("planet"); document.getElementById("sc-v-planet").classList.add("active"); document.getElementById("sc-v-system").classList.remove("active");
