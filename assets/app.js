@@ -116,6 +116,7 @@ function renderHeader(active, user) {
     <span class="sub">PhD_Exoplanets knowledge base</span>
     <nav>
       ${link("navigator.html", "Navigator")}
+      ${link("showcase.html", "Showcase")}
       ${link("chat.html", "Chat")}
       ${link("bibliography.html", "Bibliography")}
       ${link("notes.html", "Notes")}
